@@ -107,6 +107,27 @@ def cmd_merge(cfg, args):
                           "--backend local|cloud, or install the missing CLI"}))
 
 
+def cmd_adopt(cfg, args):
+    """Backfill last mile: promote state/derived/notes/*.md into knowledge/ and build the index."""
+    from engine.merge import rebuild_index
+    src = cfg.state_dir / "derived" / "notes"
+    notes = sorted(src.glob("*.md")) if src.exists() else []
+    if not notes:
+        print(f"nothing to adopt — no notes in {src} (run the backfill first)")
+        return
+    cfg.knowledge_dir.mkdir(parents=True, exist_ok=True)
+    skipped = 0
+    for n in notes:
+        dst = cfg.knowledge_dir / n.name
+        if dst.exists() and not args.force:
+            skipped += 1
+            continue
+        dst.write_text(n.read_text(encoding="utf-8"), encoding="utf-8")
+    total = rebuild_index(cfg.knowledge_dir)
+    print(f"adopted {len(notes) - skipped} notes ({skipped} existing kept — use --force to "
+          f"overwrite); index rebuilt: {total} notes in {cfg.knowledge_dir}")
+
+
 def cmd_eval(cfg, args):
     from adapters.model.loader import build_backend
     from engine.evals import eval_inject, eval_lookup, eval_recall
@@ -150,13 +171,16 @@ def main():
     m.add_argument("--backend", default=None)
     m.add_argument("--dry-run", action="store_true")
     m.add_argument("--promote", action="store_true")
+    a = sub.add_parser("adopt")
+    a.add_argument("--force", action="store_true")
     e = sub.add_parser("eval")
     e.add_argument("mode", nargs="?", choices=["inject", "lookup", "recall", "all"], default="all")
     e.add_argument("--backend", default=None)
     args = p.parse_args()
     cfg = cfgmod.load()
     {"status": cmd_status, "capture": cmd_capture, "inject": cmd_inject,
-     "refresh": cmd_refresh, "merge": cmd_merge, "eval": cmd_eval}[args.cmd](cfg, args)
+     "refresh": cmd_refresh, "merge": cmd_merge, "adopt": cmd_adopt,
+     "eval": cmd_eval}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":
