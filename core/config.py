@@ -6,6 +6,11 @@ import json
 import os
 from pathlib import Path
 
+# Marks the system's OWN model calls (route/merge prompts). Transcripts containing it are skipped
+# by capture, and text blocks containing it are stripped in distill — so internal processing run
+# through a CLI session (e.g. `claude -p`) can never be re-memorized as user history.
+SENTINEL = "<<memory-agent:internal-task>>"
+
 
 def repo_root() -> Path:
     """Walk up from this file until a directory containing config.json is found."""
@@ -26,8 +31,14 @@ class Config:
         self.data = data
         self.root = root
         paths = data.get("paths", {})
-        self.knowledge_dir = _resolve(paths.get("knowledge", "knowledge"), root)
-        self.state_dir = _resolve(paths.get("state", "state"), root)
+        data_home = os.environ.get("MEMORY_AGENT_DATA")
+        if data_home:  # plugin installs: code lives in an ephemeral cache, data must live elsewhere
+            base = Path(os.path.expanduser(data_home))
+            self.knowledge_dir = base / "knowledge"
+            self.state_dir = base / "state"
+        else:
+            self.knowledge_dir = _resolve(paths.get("knowledge", "knowledge"), root)
+            self.state_dir = _resolve(paths.get("state", "state"), root)
         self.agents = data.get("agents", [])
         self.capture_mode = data.get("capture", "native+poll")
         self.inject_cfg = data.get("inject", {"scope": "index+project", "maxNotes": 12})

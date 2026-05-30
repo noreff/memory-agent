@@ -33,8 +33,8 @@ demand) and deliver it into a starting session (native hook) or a file the host 
 |---|---|---|---|---|
 | ingest | raw files (or inbox) | `derived/chunks/*.txt` | agent self-discovers format + chunks | `input/chunk.py` (mechanical) |
 | extract | one chunk | `derived/atoms/<chunk>.json` | agent per chunk | local model per chunk |
-| cluster | all atoms | `derived/clusters/*.json` | agent scripts dedup at scale | `llmem/cluster.py` (embeddings) |
-| synth | one cluster | `derived/notes/<slug>.md` → `knowledge/` | agent per cluster | local model per cluster |
+| route/cluster | all unrouted atoms | `derived/merge/routing.json` (incremental) or `derived/clusters/*.json` (backfill) | agent dedups/routes at scale | completion route call (`engine/merge.py`) |
+| synth/merge | one cluster or touched note | `derived/merge/staged/` → `knowledge/` | agent per note | local/cloud model per note |
 
 ## Record schemas
 

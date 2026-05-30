@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MEMORY_AGENT_DATA=\"${CLAUDE_PLUGIN_DATA}\" python3 \"${CLAUDE_PLUGIN_ROOT}/adapters/agent/claude_code/hooks/session_start.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MEMORY_AGENT_DATA=\"${CLAUDE_PLUGIN_DATA}\" python3 \"${CLAUDE_PLUGIN_ROOT}/adapters/agent/claude_code/hooks/session_end.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MEMORY_AGENT_DATA=\"${CLAUDE_PLUGIN_DATA}\" python3 \"${CLAUDE_PLUGIN_ROOT}/adapters/agent/claude_code/hooks/pre_compact.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

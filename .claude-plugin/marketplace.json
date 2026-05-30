@@ -1,0 +1,14 @@
+{
+  "name": "memory-agent",
+  "owner": { "name": "Volodymyr Isai" },
+  "description": "memory-agent — universal agentic memory as markdown files you own",
+  "plugins": [
+    {
+      "name": "memory-agent",
+      "source": "./",
+      "description": "Sessions → atoms → curated knowledge base with provenance and conflicts; silent hooks + background consolidation",
+      "version": "0.1.0",
+      "homepage": "https://github.com/noreff/memory-agent"
+    }
+  ]
+}

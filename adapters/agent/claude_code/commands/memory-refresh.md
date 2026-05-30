@@ -2,11 +2,13 @@
 description: Silently consolidate accumulated memory atoms into the KB (auto-promote); one-line status
 ---
 
-Drain the memory pipeline for the repo at `/ABS/PATH/TO/memory-agent` (ROOT). A launchd agent
-already does capture + local extraction in the background; this command's job is the strong-model
-MERGE, which needs a live session. **Be as invisible as possible: no narration, no headers, no
-multi-line reports. Respond with exactly ONE short line unless notes were promoted or something
-failed.**
+Drain the memory pipeline. ROOT resolution: if `/ABS/PATH/TO/memory-agent` below looks like an
+unreplaced placeholder, you are running from the PLUGIN install — use `${CLAUDE_PLUGIN_ROOT}` as
+ROOT and prefix every python3 call with `MEMORY_AGENT_DATA="${CLAUDE_PLUGIN_DATA}"`. Otherwise
+ROOT = `/ABS/PATH/TO/memory-agent`. A launchd agent may already do capture + local extraction in
+the background; this command's job is the strong-model MERGE, which needs a live session. **Be as
+invisible as possible: no narration, no headers, no multi-line reports. Respond with exactly ONE
+short line unless notes were promoted or something failed.**
 
 1. Run: `python3 ROOT/mem.py capture && python3 ROOT/mem.py refresh --min-growth 75000 && python3 ROOT/mem.py merge --stage check`
    (idempotent backstop for launchd; run via Bash in the background if extraction kicks in, and wait).

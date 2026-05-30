@@ -59,7 +59,9 @@ def _read_json(p, default):
 
 def _write_json(p, obj):
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)  # atomic — concurrent readers never see a torn file
 
 
 def _rubric(cfg, name):
@@ -158,6 +160,11 @@ def parse_note(text):
                 block.append(lines[i][2:] if lines[i].startswith("  ") else "")
                 i += 1
             fields.append((key, ("block", "\n".join(block).rstrip())))
+        elif val.startswith("[") and val.endswith("]"):
+            # flow-style list (backfill/hand-written notes use these) — never treat as a scalar
+            items = [x.strip().strip("'\"") for x in val[1:-1].split(",") if x.strip()]
+            fields.append((key, ("list", items)))
+            i += 1
         elif val == "":
             i += 1
             items = []
@@ -209,14 +216,20 @@ def build_note(fields, body):
 
 
 def sanitize_body(text):
-    """Defense in depth: strip fences and any model-written frontmatter block(s) from a body."""
+    """Defense in depth: strip fences and any model-written frontmatter block(s) from a body —
+    but never a legitimate horizontal rule (only blocks whose lines look like `key: value`)."""
     t = text.strip()
     t = re.sub(r"^```[a-zA-Z]*\n", "", t)
     t = re.sub(r"\n```$", "", t).strip()
     while t.startswith("---"):
-        m = re.match(r"^---\n.*?\n---\n?", t, re.DOTALL)
+        m = re.match(r"^---\n(.*?)\n---\n?", t, re.DOTALL)
         if not m:
             break
+        inner = [ln for ln in m.group(1).splitlines() if ln.strip()]
+        kv = sum(1 for ln in inner
+                 if re.match(r"^[A-Za-z_][\w-]*:", ln) or ln.startswith(("  ", "- ")))
+        if not inner or kv / len(inner) < 0.6:
+            break  # not frontmatter-shaped — leave the content alone
         t = t[m.end():].lstrip("\n")
     return t.strip()
 
@@ -251,7 +264,7 @@ def rebuild_index(kb):
         if ttype == "claim":  # time-sensitive snapshots: surface their age instead of aging silently
             upd = fget(fields, "updated")
             summary = f"(as of {upd[1] if upd else 'an unrecorded date'}) {summary}"[:160]
-        rows.append((note.stem, ttype, summary))
+        rows.append((note.stem, ttype, summary.replace("|", "\\|")))
     lines = ["# Knowledge base — index", "",
              f"{len(rows)} canonical notes. Read this first; open a note for detail. Every note "
              "carries `sources` (provenance ids) and a `conflicts` field where facts disagreed.", "",
@@ -283,8 +296,14 @@ def normalize_decisions(decisions, valid):
 
 
 def prepare(cfg):
-    """Mechanical: collect unrouted atoms + index + pending topics into task.json."""
+    """Mechanical: collect unrouted atoms + index + pending topics into task.json. Clears any
+    stale staging from an abandoned earlier run — a later promote must never ship old bodies."""
     md = merge_dir(cfg)
+    for stale in ("staged", "out"):
+        if (md / stale).exists():
+            shutil.rmtree(md / stale)
+    for stale in ("routing.json", "plan.json"):
+        (md / stale).unlink(missing_ok=True)
     atoms = collect_unrouted(cfg)
     pool = load_pool(cfg)
     index_p = cfg.knowledge_dir / "index.md"
@@ -320,15 +339,18 @@ def gate(decisions, pool, thresh):
     plan = {"into": {}, "new": {}, "duplicate": [], "discard": [], "pending_add": {}}
     by_topic = {}
     for d in decisions:
-        v = d.get("verdict")
+        v, aid = d.get("verdict"), d.get("id")
+        if not aid:
+            continue
         if v == "into" and d.get("target"):
             plan["into"].setdefault(slugify(d["target"]), []).append(d)
         elif v == "new" and d.get("topic"):
             by_topic.setdefault(d["topic"], []).append(d)
         elif v == "duplicate":
-            plan["duplicate"].append(d["id"])
-        else:
-            plan["discard"].append(d["id"])
+            plan["duplicate"].append(aid)
+        elif v == "discard":
+            plan["discard"].append(aid)
+        # unknown/typo verdicts: leave the atom unrouted (model noise must not destroy data)
     for topic, ds in by_topic.items():
         pend = pool.get(topic, {})
         pend_atoms = pend.get("atoms", [])
@@ -387,7 +409,8 @@ def finalize(cfg, promote_flag=False, log=print):
             continue
         fields, _ = parse_note(note_f.read_text(encoding="utf-8"))
         cur = fget(fields, "sources")
-        merged_sources = sorted(set((cur[1] if cur else []) or []) | set(_sources_of(ds)))
+        cur_list = [] if cur is None else (cur[1] if cur[0] == "list" else [str(cur[1])])
+        merged_sources = sorted(set(cur_list) | set(_sources_of(ds)))
         fset(fields, "sources", "list", merged_sources)
         fset(fields, "updated", "scalar", _today())
         _append_conflicts(fields, _meta(slug).get("conflicts", ""))
@@ -503,7 +526,8 @@ def _parse_json_lenient(text):
 
 def route_completion(cfg, backend, task):
     from adapters.model.base import Task
-    prompt = (f"INDEX:\n{task['index']}\n\nPENDING TOPICS: "
+    from core.config import SENTINEL
+    prompt = (f"{SENTINEL}\nINDEX:\n{task['index']}\n\nPENDING TOPICS: "
               f"{json.dumps(task['pendingTopics'])}\n\nATOMS:\n"
               f"{json.dumps(task['atoms'], ensure_ascii=False, indent=1)}")
     for _ in range(2):
@@ -528,8 +552,9 @@ def synth_completion(cfg, backend, plan, log=print):
                           ensure_ascii=False, indent=1)
 
     def _run(rubric, prompt, slug):
-        r = backend.run(Task(phase="merge", system=_rubric(cfg, rubric), prompt=prompt,
-                             max_tokens=6000))
+        from core.config import SENTINEL
+        r = backend.run(Task(phase="merge", system=_rubric(cfg, rubric),
+                             prompt=f"{SENTINEL}\n{prompt}", max_tokens=6000))
         body, _, conflicts = r.text.partition(CONFLICT_SENTINEL)
         (staged / f"{slug}.body.md").write_text(sanitize_body(body) + "\n", encoding="utf-8")
         _write_json(staged / f"{slug}.meta.json", {"conflicts": conflicts.strip() or "none"})

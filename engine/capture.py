@@ -20,7 +20,9 @@ def _load_manifest(p: Path) -> dict:
 
 def _save_manifest(p: Path, manifest: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    tmp.replace(p)  # atomic — a torn manifest would reset history and re-enqueue everything
 
 
 def _append_inbox(inbox: Path, records: list) -> None:
@@ -39,7 +41,14 @@ def _record(adapter, path: Path, sig: dict, via: str) -> dict:
 
 
 def capture(adapter, cfg, baseline: bool = False) -> dict:
-    """Scan the adapter's transcripts dir; enqueue new/changed capturable files (unless baseline)."""
+    """Scan the adapter's transcripts dir; enqueue new/changed capturable files (unless baseline).
+
+    First run (no manifest yet) is ALWAYS a baseline: record everything as seen, enqueue nothing —
+    otherwise a fresh install would queue the user's entire history for extraction. Existing history
+    is bootstrapped deliberately, via the backfill."""
+    first_run = not cfg.manifest_path.exists()
+    if first_run:
+        baseline = True
     manifest = _load_manifest(cfg.manifest_path)
     seen = manifest.setdefault(adapter.name, {})
     new, scanned = [], 0
@@ -58,10 +67,11 @@ def capture(adapter, cfg, baseline: bool = False) -> dict:
         if baseline or not adapter.is_capturable(path):
             continue
         new.append(_record(adapter, path, sig, via="poll"))
-    _save_manifest(cfg.manifest_path, manifest)
-    if new:
+    if new:  # enqueue BEFORE marking seen: a crash between the two must err toward re-enqueueing
         _append_inbox(cfg.inbox, new)
-    return {"adapter": adapter.name, "scanned": scanned, "enqueued": len(new), "baseline": baseline}
+    _save_manifest(cfg.manifest_path, manifest)
+    return {"adapter": adapter.name, "scanned": scanned, "enqueued": len(new),
+            "baseline": baseline, "firstRun": first_run}
 
 
 def enqueue_path(adapter, cfg, abs_path: str, via: str = "hook") -> dict:
@@ -79,6 +89,6 @@ def enqueue_path(adapter, cfg, abs_path: str, via: str = "hook") -> dict:
     if prev and prev.get("mtime") == sig["mtime"] and prev.get("size") == sig["size"]:
         return {"enqueued": 0, "reason": "unchanged"}
     seen[key] = sig
+    _append_inbox(cfg.inbox, [_record(adapter, p, sig, via=via)])  # enqueue first, then mark seen
     _save_manifest(cfg.manifest_path, manifest)
-    _append_inbox(cfg.inbox, [_record(adapter, p, sig, via=via)])
     return {"enqueued": 1, "source": adapter.source_id(p)}

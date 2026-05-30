@@ -28,10 +28,14 @@ class ClaudeCodeAdapter(AgentAdapter):
 
     def is_capturable(self, path: Path) -> bool:
         """Keep only top-level human sessions. A main session's records carry isSidechain:false;
-        subagent transcripts carry isSidechain:true (≈75-85% of files). Cheap: read first 8KB only."""
+        subagent transcripts carry isSidechain:true (≈75-85% of files). Cheap: read first 8KB only.
+        Also skip the system's own internal model calls (sentinel-marked, e.g. `claude -p` merges)."""
         try:
             head = path.open("rb").read(8192).decode("utf-8", "ignore")
         except OSError:
+            return False
+        from core.config import SENTINEL
+        if SENTINEL in head:
             return False
         if '"isSidechain":false' in head:
             return True
