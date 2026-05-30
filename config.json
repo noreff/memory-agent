@@ -1,0 +1,31 @@
+{
+  "paths": { "knowledge": "knowledge", "state": "state" },
+
+  "agents": [
+    { "adapter": "claude-code", "enabled": true },
+    { "adapter": "opencode", "enabled": false },
+    {
+      "adapter": "generic", "name": "my-tool", "enabled": false,
+      "transcripts": { "dir": "~/.my-tool/logs", "format": "auto" },
+      "inject": { "file": "~/.my-tool/memory.md" }
+    }
+  ],
+
+  "capture": "native+poll",
+  "inject": { "scope": "index+project", "maxNotes": 12 },
+  "merge": { "autoPromote": true, "newNoteThreshold": 3 },
+
+  "model": {
+    "ingest":  { "backend": "subscription", "model": "sonnet" },
+    "extract": { "backend": "local", "model": "qwen/qwen3.6-35b-a3b" },
+    "route":   { "backend": "subscription", "model": "sonnet" },
+    "merge":   { "backend": "subscription", "model": "sonnet" },
+    "lint":    { "backend": "local", "model": "qwen/qwen3.6-35b-a3b" }
+  },
+
+  "backends": {
+    "subscription": { "kind": "agent" },
+    "local": { "kind": "completion", "baseUrl": "http://localhost:1234/v1" },
+    "cloud": { "kind": "completion", "baseUrl": "https://api.anthropic.com", "apiKeyEnv": "ANTHROPIC_API_KEY" }
+  }
+}
