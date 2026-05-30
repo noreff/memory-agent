@@ -65,29 +65,46 @@ def cmd_inject(cfg, args):
 
 
 def cmd_refresh(cfg, args):
+    from engine.lock import Busy, pipeline_lock
     extract = backend_for_phase(cfg, "extract", args.backend)
     print(f"extract backend: {extract.name}")
-    r = refresh(cfg, extract, limit=args.limit, dry_run=args.dry_run,
-                min_growth=args.min_growth)
+    try:
+        with pipeline_lock(cfg, "refresh"):
+            r = refresh(cfg, extract, limit=args.limit, dry_run=args.dry_run,
+                        min_growth=args.min_growth)
+    except Busy as e:
+        print(f"refresh: skipped — {e}")
+        return
     print(f"refresh: sessions={r['sessions']} atoms={r['atoms']} (atom store only; "
           f"run merge to consolidate into the KB)")
 
 
 def cmd_merge(cfg, args):
     from engine import merge as M
+    from engine.lock import Busy, pipeline_lock
     if args.stage == "check":
         print(json.dumps(M.check_staged(cfg)))
         return
-    if args.stage == "prepare":
-        print(json.dumps(M.prepare(cfg)))
-        return
-    if args.stage == "finalize":
-        M.finalize(cfg, promote_flag=args.promote or bool(cfg.merge_cfg.get("autoPromote")))
-        return
-    if args.stage == "promote":
-        M.promote_staged(cfg)
-        return
-    M.run_all(cfg, backend_override=args.backend, dry_run=args.dry_run, promote=args.promote)
+    try:
+        if args.stage == "prepare":
+            with pipeline_lock(cfg, "merge"):
+                print(json.dumps(M.prepare(cfg)))
+        elif args.stage == "finalize":
+            with pipeline_lock(cfg, "merge"):
+                M.finalize(cfg,
+                           promote_flag=args.promote or bool(cfg.merge_cfg.get("autoPromote")))
+        elif args.stage == "promote":
+            with pipeline_lock(cfg, "merge"):
+                M.promote_staged(cfg)
+        else:
+            with pipeline_lock(cfg, "merge"):
+                M.run_all(cfg, backend_override=args.backend, dry_run=args.dry_run,
+                          promote=args.promote)
+    except Busy as e:
+        print(json.dumps({"skipped": str(e)}))
+    except RuntimeError as e:  # e.g. `claude` CLI absent for the subscription backend
+        print(json.dumps({"error": str(e), "hint": "pick another backend: mem.py merge "
+                          "--backend local|cloud, or install the missing CLI"}))
 
 
 def cmd_eval(cfg, args):
