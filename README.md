@@ -62,14 +62,32 @@ periodic full recompile (the backfill Workflow) remains the deep-clean.
 
 ## Quick start (Claude Code)
 
-Requirements: Python 3.10+. For the local model backend, [LM Studio](https://lmstudio.ai) serving an
-OpenAI-compatible API on `:1234`. No API key needed for the subscription backend.
+**Plugin install (recommended):**
+
+```
+/plugin marketplace add noreff/memory-agent
+/plugin install memory-agent@memory-agent
+```
+
+Hooks and the `/memory-refresh` command are live immediately; your memory data lives in the
+plugin's persistent data dir (survives updates). Optional: run
+`python3 "$CLAUDE_PLUGIN_ROOT/install.py"` once for the macOS background extractor.
+
+**Or clone:**
 
 ```bash
-git clone <repo> memory-agent && cd memory-agent
-python3 install.py   # hooks into ~/.claude/settings.json, /memory-refresh command,
-                     # hourly launchd background extraction, manifest baseline
+git clone https://github.com/noreff/memory-agent && cd memory-agent
+python3 install.py   # hooks, /memory-refresh command, macOS launchd extractor, manifest baseline
 ```
+
+Requirements: Python 3.10+ (stdlib only — zero dependencies). For the local extraction backend,
+[LM Studio](https://lmstudio.ai) (or any OpenAI-compatible server) on `:1234` — set your model in
+`config.json` under `model.extract`. Consolidation needs either the Claude Code **Workflow** tool
+(ships with current Claude Code; used by `/memory-refresh` and the backfill) or any backend via
+`mem.py merge --backend local|cloud|subscription`. The launchd background extractor is macOS-only;
+on Linux schedule `mem.py capture && mem.py refresh --min-growth 75000` with cron/systemd. First
+run is always a safe baseline — existing history is never queued by accident; you bootstrap it
+deliberately with the backfill.
 
 That's it. From now on: sessions are captured by hooks, a launchd agent extracts atoms in the
 background (local model, fully silent — log at `state/logs/refresh.log`), and consolidation drains
@@ -126,7 +144,8 @@ atoms wait in a pending pool), `duplicate`, `discard`.
   ],
   "model": {
     "extract": { "backend": "local", "model": "qwen/qwen3.6-35b-a3b" },
-    "synth":   { "backend": "subscription", "model": "sonnet" }
+    "route":   { "backend": "subscription", "model": "sonnet" },
+    "merge":   { "backend": "subscription", "model": "sonnet" }
   }
 }
 ```

@@ -141,13 +141,16 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
     if not pending:
         log("inbox empty — nothing to refresh")
         return {"sessions": 0, "atoms": 0}
+    pending = [r for r in pending if r.get("source") and r.get("abs")]  # tolerate junk lines
     if min_growth:
         last = _last_done_sizes(cfg)
         kept = []
         for rec in pending:
             delta = rec.get("size", 0) - last.get(rec["source"], 0)
-            # negative delta = file replaced/rotated, treat as changed; defer only small growth
-            if rec["source"] in last and 0 <= delta < min_growth:
+            quiet = (time.time() - rec.get("mtime", 0)) > 7200  # session idle >2h → flush its tail
+            # negative delta = file replaced/rotated, treat as changed; defer only small growth on
+            # a still-ACTIVE session (otherwise the final segment would be orphaned forever)
+            if rec["source"] in last and 0 <= delta < min_growth and not quiet:
                 log(f"  {rec['source'][:12]}: grew only {delta}B (<{min_growth}) — deferred")
             else:
                 kept.append(rec)
@@ -168,14 +171,29 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
             atoms = [] if dry_run else extract_atoms(backend_extract, text, rec["source"], date,
                                                      log=log)
             if not dry_run:
+                from engine.merge import atom_id
                 atoms_dir.mkdir(parents=True, exist_ok=True)
-                (atoms_dir / f"{rec['source']}.json").write_text(
-                    json.dumps(atoms, indent=2, ensure_ascii=False), encoding="utf-8")
+                f = atoms_dir / f"{rec['source']}.json"
+                if f.exists():  # carry routed marks across re-extraction (same claim = same fact)
+                    try:
+                        marks = {atom_id(f.name, a): a["routed"]
+                                 for a in json.loads(f.read_text(encoding="utf-8"))
+                                 if isinstance(a, dict) and a.get("routed")}
+                        for a in atoms:
+                            if atom_id(f.name, a) in marks:
+                                a["routed"] = marks[atom_id(f.name, a)]
+                    except Exception:
+                        pass
+                tmp = f.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(atoms, indent=2, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(f)
             n_atoms += len(atoms)
             ok.append(rec)
             log(f"  {rec['source'][:12]} [{date}]: {len(atoms)} atoms ({len(text.split())} words)")
         except Exception as e:  # e.g. LM Studio down — keep the session queued, keep going
-            log(f"  {rec['source'][:12]}: ERROR {e} — left in inbox for next run")
+            hint = (" (is the local model server running? check config.json backends.local)"
+                    if "onnection refused" in str(e) else "")
+            log(f"  {rec['source'][:12]}: ERROR {e}{hint} — left in inbox for next run")
 
     # archive ONLY the successfully processed sources; failures and deferred entries stay queued
     if not dry_run:
@@ -190,11 +208,13 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
             if not line:
                 continue
             try:
-                if json.loads(line)["source"] in processed:
+                if json.loads(line).get("source") in processed:
                     continue
             except Exception:
-                continue
+                pass  # keep unparseable lines (e.g. a torn concurrent append) rather than drop them
             kept.append(line)
-        cfg.inbox.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+        tmp = cfg.inbox.with_suffix(".jsonl.tmp")
+        tmp.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+        tmp.replace(cfg.inbox)
 
     return {"sessions": len(ok), "atoms": n_atoms}

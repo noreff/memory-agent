@@ -71,7 +71,7 @@ them.** Memory is cross-tool; `provenance` tags which tool/source each fact came
 Any tool the core has never heard of is supported purely declaratively — point it at a transcripts
 folder and an inject file. This is the literal answer to "configurable for any tool."
 
-## The subscription "прикол" (a property of ONE adapter, not the foundation)
+## The subscription constraint (a property of ONE adapter, not the foundation)
 
 A Claude Code subscription is a **flat-rate, ~unlimited Claude compute pool — but redeemable only from
 inside a live, human-present session** (not headless; `claude -p` on a cron is the "automated CI-style
@@ -112,23 +112,20 @@ capabilities = { tools: bool, structuredOutput: "schema"|"json"|"none", maxConte
 
 ```
 memory-agent/
-  core/        pipeline.md (4-phase contract) · prompts/ (shared rubric) · schemas/
-  input/       handlers/ (format hints, self-discovering) · chunk.py (mechanical fallback ← distill.py)
+  core/        config.py · pipeline.md (on-disk contract) · prompts/ (route/merge/new-note rubrics)
+  input/       handlers/ (format hints for tool-using ingest) · chunk.py (mechanical distill+chunk)
   adapters/
-    agent/     adapter.md (capability contract) · claude-code/ (hooks, inject, capture, /memory-refresh)
-               · opencode/ · generic/
-    model/     adapter.md · subscription.js (← memory-agent.js) · local.py (← extract.py) · cloud.py
-  engine/      backfill.js (THE key feature) · refresh.py (atom collector, /loop target)
-               · merge.py + merge.js (consolidation: route atoms into notes, gate new topics,
-                 re-synth touched notes with a strong model; frontmatter built in code) · lint.py
-  knowledge/   the KB output: index.md + notes  (committed or local-only — TBD)
-  state/       gitignored: inbox/ atoms/ clusters/ manifest.json
-  config.json  active agents (list) · per-phase model backend · capture mode · paths
+    agent/     adapter.md (capability contract) · claude_code/ (hooks, commands, launchd)
+               · generic.py (any tool, zero code) — opencode resolves to generic until native
+    model/     adapter.md · local.py (LM Studio) · cloud.py (API) · subscription.py (claude -p)
+               · stub.py (tests)
+  engine/      backfill.js (THE key feature) · refresh.py (atom collector) · merge.py + merge.js
+               (consolidation: route → gate → re-synth touched notes; frontmatter built in code)
+               · evals.py · capture.py · inject.py · launchd-refresh.sh
+  knowledge/   the KB output: index.md + notes (git-ignored — personal)
+  state/       gitignored: inbox/ derived/{atoms,merge}/ backups/ logs/ manifest.json
+  config.json  active agents (list) · per-phase model backend · merge policy · paths
 ```
-
-**Rehoming (nothing thrown away):** `llmem/` → `model/local.py` + `input/chunk.py` + mechanical
-fallbacks; `~/.claude/workflows/memory-agent.js` → `model/subscription.js` + `engine/backfill.js`
-(symlinked back to `~/.claude/workflows/`); `knowledge/` unchanged.
 
 ## config.json (shape)
 

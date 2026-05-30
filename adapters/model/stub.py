@@ -13,6 +13,6 @@ class StubBackend(ModelBackend):
             return Result(text=json.dumps({"atoms": [
                 {"claim": "Stub fact extracted for testing.", "type": "project",
                  "entities": ["stub-entity"], "confidence": "low", "tags": ["stub"]}]}))
-        if task.phase == "synth":
-            return Result(text="# Stub note\n\nMerged stub content for testing.")
+        if task.phase == "merge":
+            return Result(text="# Stub note\n\nMerged stub content for testing.\n===CONFLICTS===\nnone")
         return Result(text="stub")

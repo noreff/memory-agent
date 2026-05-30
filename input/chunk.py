@@ -21,6 +21,9 @@ _MEM_HEADER = "# Your memory of this user (auto-built knowledge base)"
 
 
 def _strip_injected(text: str) -> str:
+    from core.config import SENTINEL
+    if SENTINEL in text:  # the system's own internal model call — never re-memorize it
+        return ""
     text = _SYS_REMINDER_RE.sub("", text)
     text = _CMD_WRAPPER_RE.sub("", text)
     if _MEM_HEADER in text:  # inject payload outside a system-reminder wrapper (belt & suspenders)
@@ -89,7 +92,18 @@ def distill(path, fmt="auto"):
 
 
 def chunk_text(text: str, words: int = 2800):
-    w = text.split()
-    if len(w) <= words:
+    """Split on line boundaries, preserving the USER:/ASSISTANT: structure distill built —
+    flattening newlines measurably degrades extraction."""
+    if len(text.split()) <= words:
         return [text]
-    return [" ".join(w[i:i + words]) for i in range(0, len(w), words)]
+    chunks, cur, n = [], [], 0
+    for ln in text.splitlines():
+        w = len(ln.split())
+        if n + w > words and cur:
+            chunks.append("\n".join(cur))
+            cur, n = [], 0
+        cur.append(ln)
+        n += w
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks or [text]

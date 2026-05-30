@@ -1,0 +1,12 @@
+{
+  "name": "memory-agent",
+  "displayName": "memory-agent",
+  "version": "0.1.0",
+  "description": "Universal agentic memory: your sessions compiled into a markdown knowledge base you own — with provenance, conflict tracking, and silent background upkeep.",
+  "author": { "name": "Volodymyr Isai" },
+  "repository": "https://github.com/noreff/memory-agent",
+  "license": "MIT",
+  "keywords": ["memory", "knowledge-base", "local-first", "markdown"],
+  "commands": ["./adapters/agent/claude_code/commands/"],
+  "hooks": "./hooks/hooks.json"
+}
