@@ -72,7 +72,7 @@ def load_pending(cfg):
     if not cfg.inbox.exists():
         return []
     best = {}
-    for line in cfg.inbox.open(encoding="utf-8"):
+    for line in cfg.inbox.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue

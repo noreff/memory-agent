@@ -180,6 +180,18 @@ from the index, answer from its body — the intended flow), **inject** (what's 
 index alone). Every run appends to `eval/history.jsonl`, so prompt/model changes show up as score
 deltas, not vibes.
 
+## Security model
+
+Memory built from conversations is an injection surface: transcript content could try to steer the
+models that process it. Structural defenses: the KB is only ever written by code, from staged
+artifacts, after the gate (`promote` backs up, then copies from `out/` — agents never write
+`knowledge/` directly); note frontmatter is built in code; atom payloads are fenced as untrusted
+data in every prompt; the system's own internal model calls are sentinel-tagged so they can't be
+re-memorized; raw transcripts are never modified. Residual risk: consolidation agents run with the
+host's tool permissions — review your platform's agent sandboxing if you process untrusted
+transcripts. Promoted notes are injected into future sessions, so treat `knowledge/` with the same
+care as CLAUDE.md.
+
 ## Backends & privacy
 
 The subscription is a flat-rate compute pool but only redeemable from inside a live session, so heavy
@@ -191,6 +203,7 @@ for processing. `state/`, `knowledge/`, and raw transcripts are git-ignored.
 
 ```
 core/        config + on-disk protocol (pipeline.md) + prompts/ (route/merge/new-note rubrics)
+tests/       python3 -m unittest discover tests (stdlib, no deps)
 input/       format handlers + mechanical chunker (echo-suppressed: injected memory is never re-mined)
 adapters/
   agent/     base + claude_code/ (hooks, /memory-refresh command) + generic + contract (adapter.md)
