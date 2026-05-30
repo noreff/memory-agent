@@ -84,20 +84,30 @@ def eval_lookup(cfg, backend, log=print):
     index = index_p.read_text(encoding="utf-8") if index_p.exists() else ""
     slugs = {p.stem for p in cfg.knowledge_dir.glob("*.md")} - {"index", "README"}
 
-    # stage 1: route each question to a note slug
+    # stage 1: route each question to a note slug (retry guard: reasoning models occasionally
+    # burn the budget on a preamble and emit few/no parseable picks)
     questions = "\n".join(f"{i + 1}. {g['q']}" for i, g in enumerate(gold))
-    r = backend.run(Task(
-        phase="eval",
-        system=("Below is the INDEX of a personal knowledge base. For each numbered question, "
-                "output 'N. <note-slug>' — the [[slug]] of the single note most likely to contain "
-                "the answer. NO preamble, NO analysis; first line starts with '1.'."),
-        prompt=f"INDEX:\n{index}\n\nQUESTIONS:\n{questions}", max_tokens=3000,
-    ))
-    picks = {}
-    for ln in r.text.splitlines():
-        m = re.match(r"^\s*(\d+)[.):\-]\s*\[?\[?([a-z0-9-]+)", ln.strip())
-        if m and m.group(2) in slugs:
-            picks[int(m.group(1)) - 1] = m.group(2)
+
+    def _pick(extra=None):
+        r = backend.run(Task(
+            phase="eval",
+            system=("Below is the INDEX of a personal knowledge base. For each numbered question, "
+                    "output 'N. <note-slug>' — the [[slug]] of the single note most likely to "
+                    "contain the answer. NO preamble, NO analysis, NO thinking out loud; your very "
+                    "first output line must start with '1.'."),
+            prompt=f"INDEX:\n{index}\n\nQUESTIONS:\n{questions}", max_tokens=6000, extra=extra,
+        ))
+        out = {}
+        for ln in r.text.splitlines():
+            m = re.match(r"^\s*(\d+)[.):\-]\s*\[?\[?([a-z0-9-]+)", ln.strip())
+            if m and m.group(2) in slugs:
+                out[int(m.group(1)) - 1] = m.group(2)
+        return out
+
+    picks = _pick()
+    if len(picks) < len(gold) / 2:
+        log(f"  (stage 1: only {len(picks)} picks parsed — retrying constrained)")
+        picks = _pick(extra={"top_p": 0.3, "presence_penalty": 1.0})
 
     # stage 2: answer from the picked note's body, grouped one call per note
     by_note = {}
