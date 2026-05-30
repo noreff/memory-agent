@@ -1,0 +1,26 @@
+# Private / bulky / regenerable — never commit transcripts or extracted personal data
+raw/
+distilled/
+notes/
+state/
+
+# Personal memory — your KB and working notes stay LOCAL, never in the public repo
+knowledge/*
+!knowledge/README.md
+NEXT-SESSION.md
+
+# Eval DATA is personal (gold facts, frozen transcripts); only engine/evals.py is tracked
+eval/
+
+__pycache__/
+*.pyc
+.DS_Store
+manifest.json
+.idea/
+*.bak-memagent*
+
+# Stray personal inputs at the root (meeting transcripts etc.) — never track
+huddle.md
+
+# Research artifacts contain personal context — keep local
+docs/research/

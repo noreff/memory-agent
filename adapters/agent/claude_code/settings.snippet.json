@@ -1,0 +1,27 @@
+{
+  "_comment": "Hooks for the claude-code adapter. Easiest: run `python3 install.py` (auto-fills the absolute path + baselines). To install by hand, merge this block into ~/.claude/settings.json and replace /ABS/PATH/TO/memory-agent with your clone's absolute path, then run `python3 mem.py capture --baseline` ONCE. SessionStart injects memory; SessionEnd/PreCompact enqueue the session (compute-free).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "python3 /ABS/PATH/TO/memory-agent/adapters/agent/claude_code/hooks/session_start.py", "timeout": 10 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 /ABS/PATH/TO/memory-agent/adapters/agent/claude_code/hooks/session_end.py", "timeout": 10 }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 /ABS/PATH/TO/memory-agent/adapters/agent/claude_code/hooks/pre_compact.py", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
