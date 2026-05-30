@@ -168,6 +168,12 @@ Workflow tool → { scriptPath: "<ROOT>/engine/backfill.js",
                           maxChunks: 400, model: "sonnet" } }
 ```
 
+Then adopt the result into your live KB:
+
+```bash
+python3 mem.py adopt        # state/derived/notes/ → knowledge/ + index build
+```
+
 (Reference run: 103 sessions → 6,419 atoms → 33 canonical notes in ~47 minutes.) For a fully
 local/offline backfill, seed the inbox with your files and run `mem.py refresh` + `mem.py merge
 --backend local`.
