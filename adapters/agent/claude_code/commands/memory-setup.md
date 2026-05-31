@@ -1,59 +1,69 @@
 ---
-description: Conversational onboarding — explain memory-agent, discover sources with consent, configure, backfill
+description: Conversational onboarding — taste first, three questions, consent-first discovery, quick backfill then full
 ---
 
-You are driving memory-agent's onboarding. ROOT resolution: if `/ABS/PATH/TO/memory-agent` below
-looks like an unreplaced placeholder you are running from the PLUGIN install — use
-`${CLAUDE_PLUGIN_ROOT}` as ROOT and prefix every python3 call with
-`MEMORY_AGENT_DATA="${CLAUDE_PLUGIN_DATA}"`; the DATA dir is `${CLAUDE_PLUGIN_DATA}`. Otherwise
-ROOT = `/ABS/PATH/TO/memory-agent` and DATA = ROOT.
+You are driving memory-agent's onboarding. Speak the user's language. ROOT resolution: if
+`/ABS/PATH/TO/memory-agent` below looks like an unreplaced placeholder you are running from the
+PLUGIN install — use `${CLAUDE_PLUGIN_ROOT}` as ROOT, DATA = `${CLAUDE_PLUGIN_DATA}`, and prefix
+every python3 call with `MEMORY_AGENT_DATA="${CLAUDE_PLUGIN_DATA}"`. Otherwise ROOT =
+`/ABS/PATH/TO/memory-agent` and DATA = ROOT.
 
-**If the KB already has notes** (DATA/knowledge/index.md exists and lists notes): this is
-RECONFIGURE mode. Offer exactly: add a memory source / change settings (extraction backend,
-auto-promote, background collector) / show status / run eval. Do what they pick, then stop.
+**Pick the mode by state:**
+- DATA/knowledge/index.md lists notes → **RECONFIGURE**: offer exactly — add a memory source /
+  change settings (extraction backend, auto-promote, background collector) / show status / run
+  eval. Do what they pick, stop.
+- DATA/state/derived has atoms but knowledge/ has no notes → **RESUME**: say an earlier setup was
+  interrupted, then continue from step 5 (merge cycles → payoff).
+- Otherwise → **FIRST RUN**, below. Keep it tight; "use defaults" is a complete answer everywhere;
+  never narrate commands.
 
-**Otherwise, first-run onboarding — keep the whole dialog tight (≤3 questions), never narrate
-commands, and make "use defaults" a complete answer at every step:**
+1. **The taste — show value before asking anything.** Find their most recent main session
+   (`ls -t ~/.claude/projects/*/*.jsonl`, pick the newest whose head has `"isSidechain":false`),
+   skim it, and open with: "If I had persistent memory, from your last session alone I'd remember:"
+   + 3 specific durable facts you actually found. Then two sentences: this builds that memory from
+   their ENTIRE history — markdown notes they own at DATA/knowledge/, every fact carrying its
+   source sessions and a dated log of superseded beliefs; raw files never modified; with a local
+   model, transcripts never leave the machine. Ask: set it up? (~2 minutes of questions, then a
+   quick backfill — first results in minutes.)
 
-1. **Explain first, in ≤5 of your own sentences:** it compiles their AI conversation history into
-   a knowledge base of markdown notes THEY own (at DATA/knowledge/ — every fact carries which
-   sessions it came from and a log of superseded beliefs); raw files are never modified; with a
-   local model running, transcripts never leave the machine — consolidation uses their Claude plan
-   unless they choose otherwise. Ask if they want to proceed.
+2. **Questions — use the AskUserQuestion tool if available, max 3, defaults marked, never ask
+   what's detectable** (run `python3 ROOT/mem.py status` first; skip the launchd question off
+   macOS):
+   - Extraction: report detection ("local model server ✓ — free and fully private" or "no local
+     server — I'll use your Claude plan (haiku); add LM Studio anytime to make this free and
+     local"). Confirm/override.
+   - Updates: auto-apply with timestamped backups (recommended) or stage for review?
+   - macOS: install the silent hourly background collector? (Recommended.)
 
-2. **Three questions, defaults stated** (run `python3 ROOT/mem.py status` first to detect the
-   extraction backend):
-   - Extraction: report what auto-detection found ("local model server ✓" or "no local server —
-     I'll use your Claude plan (haiku); install LM Studio anytime to make extraction free and
-     fully private"). Confirm or let them override.
-   - Updates: auto-apply with timestamped backups (default) or stage every change for review
-     (`merge.autoPromote`)?
-   - macOS only: install the silent hourly background collector (launchd)? Default yes.
+3. **Source discovery — consent before scanning.** Name what you'd check: Claude Code history
+   (hooks already cover the future), `~/.opencode`, top level of `~/Downloads`/`~/Desktop` for AI
+   exports (`conversations.json`, `*chatgpt*`, `*claude*` archives), plus any folder they name.
+   Scan ONLY what they approve; present findings as a checklist with sizes/counts; they pick.
+   Never roam beyond approved paths.
 
-3. **Source discovery — consent before scanning.** Say what you would look at: their Claude Code
-   history (hooks already cover the future; the backfill covers the past), `~/.opencode`, and the
-   top level of `~/Downloads`/`~/Desktop` for AI export files (`conversations.json`, `*chatgpt*`,
-   `*claude*` archives) — plus any folder they name. Scan ONLY what they approve. Present findings
-   as a checklist with sizes/counts; they pick what to include. Never roam beyond approved paths.
+4. **Execute, quietly:** write choices as a config override to DATA/config.json (top-level keys
+   overlay the shipped config, survive updates); `python3 ROOT/install.py` if launchd approved
+   (export MEMORY_AGENT_DATA for plugin installs); `python3 ROOT/mem.py capture` (first run
+   auto-baselines). For ONGOING sources (tools that keep producing) add a generic adapter entry to
+   the config override instead of backfilling.
 
-4. **Execute (quietly):**
-   - Write their choices as a config override to DATA/config.json (top-level keys only, e.g.
-     `{"merge": {"autoPromote": false}}`) — it overlays the shipped config and survives updates.
-   - If launchd approved: run `python3 ROOT/install.py` (with MEMORY_AGENT_DATA exported for
-     plugin installs).
-   - `python3 ROOT/mem.py capture` (first run auto-baselines — nothing floods).
-   - For each ONE-TIME source (exports, old-machine dumps): leave the files where they are
-     (raw is immutable, never copy gigabytes) and run the backfill Workflow in the background:
-     `{scriptPath: "ROOT/engine/backfill.js", args: {rawDir: "<source dir>", derivedDir:
-     "DATA/state/derived", maxChunks: 400, model: "sonnet"}}` — format hints live in
-     ROOT/input/handlers/. For ONGOING sources (another tool that keeps producing), instead add a
-     generic adapter entry to the config override (`agents` list: name, transcripts dir,
-     inject file).
-   - When the backfill completes: `python3 ROOT/mem.py adopt`, then run merge cycles
-     (`/memory-refresh` logic) until `merge --stage check` reports `newAtoms` < 8 — routing is
-     batched, so large backlogs take several cycles.
+5. **Quick pass first — minutes to wow, not an hour.** Run the backfill Workflow on their primary
+   history with `maxChunks: 60` ({scriptPath: "ROOT/engine/backfill.js", args: {rawDir: <dir>,
+   derivedDir: "DATA/state/derived", maxChunks: 60, model: "sonnet"}}), then
+   `python3 ROOT/mem.py adopt`, then merge cycles until `merge --stage check` shows newAtoms < 8.
+   Tell them up front roughly how long (a quick pass is minutes; they can keep working).
 
-5. **The payoff — always end here:** read DATA/knowledge/index.md and tell them "here's what I now
-   know about you" with ~5 specific facts from their actual notes. Then, in two sentences: where
-   the files live, that editing a note directly is the way to correct anything, and that
-   `/memory-refresh` (or a `/loop 4h /memory-refresh`) keeps it current.
+6. **The payoff — always end here, it has four beats:**
+   - "Here's what I now know about you" + ~5 specific facts read from DATA/knowledge/index.md.
+   - If any note has a `conflicts` entry, show ONE: "I also caught your setup changing over time:
+     …" — this is the part no other memory does; let them see it.
+   - Invite a correction: "spot anything wrong? Tell me or edit the note file directly — it's
+     yours." Fix it live if they do.
+   - Ownership + exit confidence, one line each: files live at DATA/knowledge/ with timestamped
+     backups of every change; `python3 ROOT/install.py --uninstall` removes every trace.
+
+7. **Then offer the full pass:** estimate from real counts (sessions found × observed quick-pass
+   rate; state the number) and offer to run the complete backfill (`maxChunks: 400+`, plus any
+   approved exports — format hints in ROOT/input/handlers/) in the background. Send a
+   PushNotification one-liner when it completes; they can ask "memory status" anytime. Mention
+   `/memory-refresh` (or `/loop 4h /memory-refresh`) keeps memory current from here.
