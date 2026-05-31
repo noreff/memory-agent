@@ -7,6 +7,5 @@
   "repository": "https://github.com/noreff/memory-agent",
   "license": "MIT",
   "keywords": ["memory", "knowledge-base", "local-first", "markdown"],
-  "commands": ["./adapters/agent/claude_code/commands/"],
-  "hooks": "./hooks/hooks.json"
+  "commands": ["./adapters/agent/claude_code/commands/"]
 }
