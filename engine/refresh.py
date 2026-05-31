@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 
 from input.chunk import chunk_text, distill
 
@@ -118,18 +119,21 @@ def extract_atoms(backend, text, source, date, max_tokens=6000, log=None):
     return atoms
 
 
-def _last_done_sizes(cfg):
-    """Latest processed size per source from the inbox archive (for growth gating)."""
+def _last_done(cfg):
+    """Per source, from the inbox archive: max processed transcript size (growth gating) and max
+    processed byte offset (tail-only re-extraction of append-only logs)."""
     done = cfg.state_dir / "inbox" / "done.jsonl"
-    sizes = {}
+    out = {}
     if done.exists():
         for line in done.read_text(encoding="utf-8").splitlines():
             try:
                 rec = json.loads(line)
-                sizes[rec["source"]] = max(sizes.get(rec["source"], 0), rec.get("size", 0))
+                cur = out.setdefault(rec["source"], {"size": 0, "bytes": 0})
+                cur["size"] = max(cur["size"], rec.get("size", 0))
+                cur["bytes"] = max(cur["bytes"], rec.get("bytesProcessed", 0))
             except Exception:
                 continue
-    return sizes
+    return out
 
 
 def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=print):
@@ -144,11 +148,11 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
         log("inbox empty — nothing to refresh")
         return {"sessions": 0, "atoms": 0}
     pending = [r for r in pending if r.get("source") and r.get("abs")]  # tolerate junk lines
+    last = _last_done(cfg)
     if min_growth:
-        last = _last_done_sizes(cfg)
         kept = []
         for rec in pending:
-            delta = rec.get("size", 0) - last.get(rec["source"], 0)
+            delta = rec.get("size", 0) - last.get(rec["source"], {}).get("size", 0)
             quiet = (time.time() - rec.get("mtime", 0)) > 7200  # session idle >2h → flush its tail
             # negative delta = file replaced/rotated, treat as changed; defer only small growth on
             # a still-ACTIVE session (otherwise the final segment would be orphaned forever)
@@ -165,18 +169,37 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
     ok = []  # records fully processed this run (failures stay queued for the next run)
     for rec in pending:
         try:
-            text, date = distill(rec["abs"], rec.get("format", "auto"))
+            # Tail-only re-extraction: append-only logs resume from the last processed byte offset
+            # (a 3-day session pays for its new slice, not its whole history, on every pass).
+            fmt = rec.get("format", "auto")
+            prev_bytes = last.get(rec["source"], {}).get("bytes", 0)
+            tailable = fmt in ("claude-code-jsonl", "opencode", "jsonl") \
+                or str(rec["abs"]).endswith(".jsonl")
+            try:
+                cur_size = Path(rec["abs"]).stat().st_size
+            except OSError:
+                cur_size = 0
+            offset = prev_bytes if (tailable and 0 < prev_bytes <= cur_size) else 0
+            text, date, end_off = distill(rec["abs"], fmt, offset=offset)
             if not text.strip():
-                log(f"  {rec['source'][:12]}: empty after distill — skip")
-                ok.append(rec)
+                log(f"  {rec['source'][:12]}: "
+                    f"{'no new content in tail' if offset else 'empty after distill'} — skip")
+                ok.append({**rec, "bytesProcessed": end_off})
                 continue
             atoms = [] if dry_run else extract_atoms(backend_extract, text, rec["source"], date,
                                                      log=log)
+            new_n = len(atoms)
             if not dry_run:
                 from engine.merge import atom_id
                 atoms_dir.mkdir(parents=True, exist_ok=True)
                 f = atoms_dir / f"{rec['source']}.json"
-                if f.exists():  # carry routed marks across re-extraction (same claim = same fact)
+                if offset and f.exists():  # tail mode: APPEND; existing atoms (and marks) untouched
+                    try:
+                        existing = json.loads(f.read_text(encoding="utf-8"))
+                    except Exception:
+                        existing = []
+                    atoms = existing + atoms
+                elif f.exists():  # full re-extract: carry routed marks across (same claim = same fact)
                     try:
                         marks = {atom_id(f.name, a): a["routed"]
                                  for a in json.loads(f.read_text(encoding="utf-8"))
@@ -189,9 +212,11 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
                 tmp = f.with_suffix(".json.tmp")
                 tmp.write_text(json.dumps(atoms, indent=2, ensure_ascii=False), encoding="utf-8")
                 tmp.replace(f)
-            n_atoms += len(atoms)
-            ok.append(rec)
-            log(f"  {rec['source'][:12]} [{date}]: {len(atoms)} atoms ({len(text.split())} words)")
+            n_atoms += new_n
+            ok.append({**rec, "bytesProcessed": end_off})
+            log(f"  {rec['source'][:12]} [{date}]: {new_n} atoms"
+                f"{' (tail from ' + str(offset) + 'B)' if offset else ''} "
+                f"({len(text.split())} words)")
         except Exception as e:  # e.g. LM Studio down — keep the session queued, keep going
             hint = (" (is the local model server running? check config.json backends.local)"
                     if "onnection refused" in str(e) else "")

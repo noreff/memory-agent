@@ -57,10 +57,16 @@ def _content_text(content, tool_cap: int) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def distill_jsonl(path, tool_cap: int = 6):
-    """Return (clean_text, date) from a .jsonl transcript; skips sidechain/subagent turns."""
+def distill_jsonl(path, tool_cap: int = 6, offset: int = 0):
+    """Return (clean_text, date, end_offset) from a .jsonl transcript; skips sidechain/subagent
+    turns. `offset` (bytes) supports tail-only re-processing of append-only logs: pass the offset
+    a previous run returned and only the new records are read."""
+    with Path(path).open("rb") as f:
+        f.seek(offset)
+        data = f.read()
+    end_offset = offset + len(data)
     lines, date = [], None
-    for raw in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+    for raw in data.decode("utf-8", errors="ignore").splitlines():
         raw = raw.strip()
         if not raw:
             continue
@@ -79,16 +85,17 @@ def distill_jsonl(path, tool_cap: int = 6):
         text = _content_text(msg.get("content"), tool_cap)
         if text.strip():
             lines.append(f"{msg.get('role', o['type']).upper()}: {text.strip()}")
-    return "\n\n".join(lines), (date or "unknown")
+    return "\n\n".join(lines), (date or "unknown"), end_offset
 
 
-def distill(path, fmt="auto"):
-    """Dispatch on format. 'auto' sniffs by extension/first byte."""
+def distill(path, fmt="auto", offset: int = 0):
+    """Dispatch on format → (text, date, end_offset). 'auto' sniffs by extension. Only line-based
+    append-only formats honor `offset`; other files are always read whole."""
     p = Path(path)
     if fmt in ("claude-code-jsonl", "opencode", "jsonl") or p.suffix == ".jsonl":
-        return distill_jsonl(p)
+        return distill_jsonl(p, offset=offset)
     text = p.read_text(encoding="utf-8", errors="ignore")
-    return text, "unknown"
+    return text, "unknown", len(text.encode("utf-8"))
 
 
 def chunk_text(text: str, words: int = 2800):
