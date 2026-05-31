@@ -68,10 +68,15 @@ periodic full recompile (the backfill Workflow) remains the deep-clean.
 curl -fsSL https://raw.githubusercontent.com/noreff/memory-agent/main/install.sh | sh
 ```
 
-(Installs as a Claude Code plugin — no source to manage; falls back to a git install if the
-`claude` CLI is absent.) Prefer doing it by hand? `claude plugin marketplace add
-noreff/memory-agent && claude plugin install memory-agent@memory-agent`, or the same two
-`/plugin …` commands inside any session.
+**Already in Claude Code? Don't leave it** — same result, platform-native trust prompts:
+
+```
+/plugin marketplace add noreff/memory-agent
+/plugin install memory-agent@memory-agent
+```
+
+Either way it installs as a plugin (no source to manage, updates via `/plugin update`); the curl
+script falls back to a git install when the `claude` CLI is absent.
 
 Then say **`/memory-setup`** — the agent walks you through everything conversationally: shows you
 what it would remember from your last session, asks three questions, finds your history (with your
