@@ -62,12 +62,13 @@ periodic full recompile (the backfill Workflow) remains the deep-clean.
 
 ## Quick start (Claude Code)
 
-**Plugin install (recommended — you never leave Claude Code, no terminal, no git):**
+**Plugin install (recommended — no git, no source to manage):**
 
+One line in your terminal:
+```bash
+claude plugin marketplace add noreff/memory-agent && claude plugin install memory-agent@memory-agent
 ```
-/plugin marketplace add noreff/memory-agent
-/plugin install memory-agent@memory-agent
-```
+or the same two commands inside any Claude Code session (`/plugin marketplace add …`, `/plugin install …`).
 
 Then say **`/memory-setup`** — the agent walks you through everything conversationally: shows you
 what it would remember from your last session, asks three questions, finds your history (with your
