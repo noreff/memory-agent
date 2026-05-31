@@ -59,4 +59,14 @@ def load(path: Path | None = None) -> Config:
     root = repo_root()
     cfg_path = Path(path) if path else (root / "config.json")
     data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    # A config.json in the data dir overrides the shipped one (top-level keys win) — this is how
+    # plugin installs customize models/policy without editing the update-overwritten plugin cache.
+    data_home = os.environ.get("MEMORY_AGENT_DATA")
+    if data_home:
+        user_cfg = Path(os.path.expanduser(data_home)) / "config.json"
+        if user_cfg.exists():
+            try:
+                data = {**data, **json.loads(user_cfg.read_text(encoding="utf-8"))}
+            except Exception:
+                pass  # a broken override must not take memory down; shipped config still works
     return Config(data, root)
