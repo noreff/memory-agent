@@ -297,7 +297,11 @@ def normalize_decisions(decisions, valid):
 
 def prepare(cfg):
     """Mechanical: collect unrouted atoms + index + pending topics into task.json. Clears any
-    stale staging from an abandoned earlier run — a later promote must never ship old bodies."""
+    stale staging from an abandoned earlier run — a later promote must never ship old bodies.
+
+    Routing is BATCHED (merge.routeBatch, default 300): a bulk backfill can leave thousands of
+    unrouted atoms, and one route call can't hold them all — each merge cycle takes one batch;
+    repeat cycles until check_staged reports the backlog drained."""
     md = merge_dir(cfg)
     for stale in ("staged", "out"):
         if (md / stale).exists():
@@ -305,10 +309,15 @@ def prepare(cfg):
     for stale in ("routing.json", "plan.json"):
         (md / stale).unlink(missing_ok=True)
     atoms = collect_unrouted(cfg)
+    total = len(atoms)
+    cap = int(cfg.merge_cfg.get("routeBatch", 300))
+    if cap and total > cap:
+        atoms = atoms[:cap]
     pool = load_pool(cfg)
     index_p = cfg.knowledge_dir / "index.md"
     task = {
         "atoms": atoms,
+        "totalUnrouted": total,
         "index": index_p.read_text(encoding="utf-8") if index_p.exists() else "(empty KB)",
         "validTargets": sorted(valid_slugs(cfg)),
         "pendingTopics": [{"topic": t, "type": v.get("type", "project"),
@@ -317,7 +326,7 @@ def prepare(cfg):
         "knowledgeDir": str(cfg.knowledge_dir),
     }
     _write_json(md / "task.json", task)
-    return {"taskPath": str(md / "task.json"), "atomCount": len(atoms),
+    return {"taskPath": str(md / "task.json"), "atomCount": len(atoms), "totalUnrouted": total,
             "validTargets": task["validTargets"],
             "pendingTopics": task["pendingTopics"], "threshold": task["threshold"]}
 
