@@ -16,7 +16,8 @@
   "merge": { "autoPromote": true, "newNoteThreshold": 3 },
 
   "model": {
-    "extract": { "backend": "local", "model": "qwen/qwen3.6-35b-a3b" },
+    "extract": { "backend": "auto",
+                 "models": { "local": "qwen/qwen3.6-35b-a3b", "subscription": "haiku" } },
     "route":   { "backend": "subscription", "model": "sonnet" },
     "merge":   { "backend": "subscription", "model": "sonnet" }
   },

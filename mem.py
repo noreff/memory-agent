@@ -38,9 +38,14 @@ from adapters.model.loader import backend_for_phase  # noqa: E402
 
 
 def cmd_status(cfg, args):
+    from adapters.model.loader import detect_backend
     n = sum(1 for _ in cfg.inbox.open()) if cfg.inbox.exists() else 0
     print(f"knowledge: {cfg.knowledge_dir}")
     print(f"state:     {cfg.state_dir}")
+    try:
+        print(f"extract backend (auto): {detect_backend(cfg)}")
+    except RuntimeError as e:
+        print(f"extract backend (auto): NONE — {e}")
     print(f"inbox pending: {n}")
     from engine.merge import count_unrouted
     print(f"unrouted atoms: {count_unrouted(cfg)}")

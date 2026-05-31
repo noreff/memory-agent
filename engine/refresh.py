@@ -90,13 +90,15 @@ def extract_atoms(backend, text, source, date, max_tokens=6000, log=None):
     """Chunk + extract with a one-retry anti-repeat guard (MoE models can loop on long repetitive
     chunks). Provenance (source/date) is stamped in CODE, never trusted from the model."""
     from adapters.model.base import Task
+    from core.config import SENTINEL  # mark extraction calls so they can never be re-memorized
     atoms = []
     chunks = chunk_text(text)
     for ci, chunk in enumerate(chunks):
         best, t0 = None, time.time()
         for attempt in range(2):
             r = backend.run(Task(phase="extract", system=EXTRACT_SYS,
-                                 prompt=f"TRANSCRIPT:\n\n{chunk}", max_tokens=max_tokens,
+                                 prompt=f"{SENTINEL}\nTRANSCRIPT:\n\n{chunk}",
+                                 max_tokens=max_tokens,
                                  expect_json=True, extra=_ANTI_REPEAT if attempt else None))
             parsed = _parse_atoms(r.text)
             # keep the BEST attempt: a parsed-but-truncated list beats nothing; a clean finish wins

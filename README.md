@@ -80,14 +80,20 @@ git clone https://github.com/noreff/memory-agent && cd memory-agent
 python3 install.py   # hooks, /memory-refresh command, macOS launchd extractor, manifest baseline
 ```
 
-Requirements: Python 3.10+ (stdlib only — zero dependencies). For the local extraction backend,
-[LM Studio](https://lmstudio.ai) (or any OpenAI-compatible server) on `:1234` — set your model in
-`config.json` under `model.extract`. Consolidation needs either the Claude Code **Workflow** tool
-(ships with current Claude Code; used by `/memory-refresh` and the backfill) or any backend via
-`mem.py merge --backend local|cloud|subscription`. The launchd background extractor is macOS-only;
-on Linux schedule `mem.py capture && mem.py refresh --min-growth 75000` with cron/systemd. First
-run is always a safe baseline — existing history is never queued by accident; you bootstrap it
-deliberately with the backfill.
+Requirements: Python 3.10+ (stdlib only — zero dependencies) and Claude Code itself. That's it:
+extraction defaults to `auto` and resolves to whatever you have — a local OpenAI-compatible server
+([LM Studio](https://lmstudio.ai) on `:1234`) if one is running, otherwise **your Claude plan**
+(the `claude` CLI, haiku for extraction), otherwise an `ANTHROPIC_API_KEY`. **A local model is a
+bonus, not a dependency**: when LM Studio is up, extraction becomes free and your transcripts never
+leave the machine; the system detects it automatically, per run. One policy line: the *background*
+extractor only ever uses the local backend (a daemon shouldn't spend your Claude plan headlessly) —
+without one, it captures only, and atoms extract on your next in-session `/memory-refresh`.
+Consolidation uses the Claude Code **Workflow** tool (ships with current Claude Code) or any
+backend via `mem.py merge --backend …`. The launchd extractor is macOS-only; on Linux schedule
+`mem.py capture && mem.py refresh --min-growth 75000` with cron/systemd. First run is always a safe
+baseline — existing history is never queued by accident; you bootstrap it deliberately with the
+backfill. Plugin installs customize everything by dropping a `config.json` into the plugin data
+dir (overrides the shipped defaults, survives updates).
 
 That's it. From now on: sessions are captured by hooks, a launchd agent extracts atoms in the
 background (local model, fully silent — log at `state/logs/refresh.log`), and consolidation drains
