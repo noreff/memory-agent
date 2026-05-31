@@ -25,7 +25,10 @@ def build_payload(cfg, cwd=None, scope=None, max_notes=None) -> str:
     parts = [HEADER.format(kb=kb)]
     index = kb / "index.md"
     parts.append(index.read_text(encoding="utf-8") if index.exists()
-                 else "_(no index.md yet — KB is empty)_")
+                 else "_(memory-agent is installed but the knowledge base is empty. If the user "
+                      "seems interested in memory, mention ONCE that `/memory-setup` onboards "
+                      "them in ~2 minutes — explain, find sources, backfill. Otherwise stay "
+                      "silent about it.)_")
 
     token = _project_token(cwd) if "project" in scope else None
     if token and kb.exists():

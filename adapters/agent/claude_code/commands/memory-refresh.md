@@ -18,6 +18,9 @@ short line unless notes were promoted or something failed.**
 4. After promotion, reply with one line — `memory: N atoms → updated X notes, created Y` — and send a
    PushNotification with the same line ONLY if notes were created or a conflict was recorded. On any
    error, reply with one line describing it.
+5. Routing is batched (default 300 atoms/cycle): if `merge --stage check` still reports `newAtoms`
+   ≥ 8 after promotion (big backlog, e.g. a fresh backfill), run the Workflow again — repeat until
+   drained, then give ONE total line for all cycles combined.
 
 Suitable for a sparse loop (e.g. `/loop 4h /memory-refresh`). Audit trail lives in
 `ROOT/state/logs/refresh.log`, `state/backups/`, and `state/derived/merge/history/` — look whenever
