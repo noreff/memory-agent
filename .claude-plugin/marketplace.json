@@ -6,7 +6,7 @@
     {
       "name": "memory-agent",
       "source": "./",
-      "description": "Sessions → atoms → curated knowledge base with provenance and conflicts; silent hooks + background consolidation",
+      "description": "Sessions → atoms → curated knowledge base with provenance and conflicts; silent hooks + background consolidation. Run /memory-setup to begin.",
       "version": "0.1.0",
       "homepage": "https://github.com/noreff/memory-agent"
     }

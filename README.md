@@ -62,16 +62,19 @@ periodic full recompile (the backfill Workflow) remains the deep-clean.
 
 ## Quick start (Claude Code)
 
-**Plugin install (recommended):**
+**Plugin install (recommended — you never leave Claude Code, no terminal, no git):**
 
 ```
 /plugin marketplace add noreff/memory-agent
 /plugin install memory-agent@memory-agent
 ```
 
-Hooks and the `/memory-refresh` command are live immediately; your memory data lives in the
-plugin's persistent data dir (survives updates). Optional: run
-`python3 "$CLAUDE_PLUGIN_ROOT/install.py"` once for the macOS background extractor.
+Then say **`/memory-setup`** — the agent walks you through everything conversationally: shows you
+what it would remember from your last session, asks three questions, finds your history (with your
+consent), backfills in the background, and ends with "here's what I now know about you." Hooks and
+commands are live from install; memory data lives in the plugin's persistent data dir (survives
+updates); even the optional macOS background collector is installed by the agent during setup if
+you say yes.
 
 **Or clone:**
 

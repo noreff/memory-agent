@@ -2,7 +2,7 @@
   "name": "memory-agent",
   "displayName": "memory-agent",
   "version": "0.1.0",
-  "description": "Universal agentic memory: your sessions compiled into a markdown knowledge base you own — with provenance, conflict tracking, and silent background upkeep.",
+  "description": "Universal agentic memory: your sessions compiled into a markdown knowledge base you own — provenance, conflict tracking, silent background upkeep. Run /memory-setup to begin.",
   "author": { "name": "Volodymyr Isai" },
   "repository": "https://github.com/noreff/memory-agent",
   "license": "MIT",
