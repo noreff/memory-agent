@@ -96,7 +96,7 @@ class TestDistill(unittest.TestCase):
                  "message": {"role": "assistant", "content": "subagent noise"}},
             ]
             tx.write_text("\n".join(json.dumps(r) for r in recs))
-            text, _ = distill(str(tx), "claude-code-jsonl")
+            text, _, _ = distill(str(tx), "claude-code-jsonl")
             self.assertIn("use pnpm", text)
             for leaked in ("injected memory", "internal route prompt", "subagent noise"):
                 self.assertNotIn(leaked, text)
@@ -122,6 +122,17 @@ class TestRefresh(unittest.TestCase):
             cfg.inbox.write_text(json.dumps({**rec, "size": 200}) + "\n")
             refresh(cfg, StubBackend(), log=lambda m: None)
             self.assertEqual(json.loads(af.read_text())[0]["routed"]["to"], "note-x")
+
+            # tail mode: append a NEW record → only the tail is extracted, appended; mark intact
+            with tx.open("a") as f:
+                f.write("\n" + json.dumps({"type": "user", "isSidechain": False, "message":
+                                           {"role": "user", "content": "also uses caddy on 8080"}}))
+            cfg.inbox.write_text(json.dumps({**rec, "size": 300, "mtime": time.time()}) + "\n")
+            refresh(cfg, StubBackend(), log=lambda m: None)
+            atoms = json.loads(af.read_text())
+            self.assertEqual(len(atoms), 2)                       # appended, not rewritten
+            self.assertEqual(atoms[0]["routed"]["to"], "note-x")  # mark untouched
+            self.assertNotIn("routed", atoms[1])                  # new atom unrouted
 
 
 if __name__ == "__main__":
