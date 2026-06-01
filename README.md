@@ -1,156 +1,86 @@
 # memory-agent
 
-A **universal agentic memory** for coding agents. Point it at any tool's conversation history; it
-builds and keeps fresh one shared markdown knowledge base, and feeds that memory back into whatever
-agent you use — so a fresh session is instantly *in the loop* on your machine, projects, and
-preferences.
+Your coding agent forgets everything between sessions. The history is all there on disk - hundreds of transcripts where you explained your stack, your ports, your decisions. Nobody reads it.
 
-## Why
+memory-agent reads it. It compiles your AI conversation history into a knowledge base of plain markdown notes, keeps it fresh in the background, and hands it to your agent when a session starts. Open a fresh session, ask "what do you know about me", get a real answer.
 
-The frontier converged on this architecture in 2026: ChatGPT's memory moved to background
-consolidation from raw chat history; Anthropic's first-party memory tool is plain files read
-index-first with no vector DB. memory-agent is that same architecture — **except you own it**:
+## Install
 
-- **Your memory is markdown files on your disk.** Read them, edit them, grep them, version them.
-  No hosted store, no embeddings infra, no database to trust.
-- **Every fact carries receipts.** Notes record `sources` (which sessions a fact came from) and
-  `conflicts` (what used to be true, superseded when, by what). Contradictions are resolved by
-  recency and *logged*, never silently overwritten.
-- **No stub spam.** New topics earn a note only after enough independent facts accumulate; one-off
-  factoids wait in a pending pool instead of polluting the KB.
-- **It can't eat itself.** Injected memory is stripped before extraction, so the system never
-  re-memorizes its own output.
-- **Invisible by default, auditable on demand.** A background agent collects and extracts; merges
-  auto-apply with timestamped backups; logs, backups, and run archives are there when you want
-  them and never pushed at you.
-- **Any model, any agent.** Extraction runs on a free local model (LM Studio); consolidation on a
-  strong model (Claude subscription subagents or any API). Swap per-phase in config. Host adapters
-  make the same KB serve multiple agents.
-
-- **Source-agnostic** — any folder of files (Claude Code / OpenCode `.jsonl`, plain markdown,
-  arbitrary docs). The ingest step self-discovers each format.
-- **Agent-agnostic** — a thin adapter per host tool (Claude Code today; OpenCode / others via the
-  `generic` adapter). One config selects which tools feed and read the KB.
-- **Model-agnostic** — a pluggable backend per phase: local LLMs (LM Studio), a cloud API, or the
-  Claude Code subscription. Never hardcoded.
-- **Backfill-first** — bootstrap the whole KB from your existing history in one pass, then keep it
-  current incrementally.
-
-Output is plain markdown notes. No vector DB — at personal scale an LLM reading a structured
-`index.md` beats similarity search. See [`DESIGN.md`](DESIGN.md) for the full architecture.
-
-## How it works (three flows, three seams)
-
-```
-capture  notice new transcripts (manifest-diff)            → state/inbox/        (compute-free)
-refresh  inbox → distill+chunk → extract atoms             → state/derived/atoms (cheap model, local-friendly)
-merge    route atoms into existing notes → re-synth touched → knowledge/         (strong model)
-inject   knowledge/ → into a starting session                                    (read-only)
-```
-
-Two-speed processing by design: **refresh** is the cheap, frequent atom collector (safe to run on a
-local model); **merge** is the consolidation step that needs judgment (routes each atom into the
-existing note it belongs to, creates a new note only when a topic accumulates ≥3 atoms, records
-conflicts with recency). Note frontmatter is always assembled in code, never by the model. A
-periodic full recompile (the backfill Workflow) remains the deep-clean.
-
-| Seam | What it abstracts | Where |
-|---|---|---|
-| input-handler | how to read a format | `input/` |
-| agent-adapter | where/when to capture, how to inject, whether the host offers compute | `adapters/agent/` |
-| model-adapter | what runs the LLM work (local / cloud / subscription) | `adapters/model/` |
-
-## Quick start (Claude Code)
-
-**One command:**
+One command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/noreff/memory-agent/main/install.sh | sh
 ```
 
-**Already in Claude Code? Don't leave it** — same result, platform-native trust prompts:
+Already in Claude Code? Same result without leaving it:
 
 ```
 /plugin marketplace add noreff/memory-agent
 /plugin install memory-agent@memory-agent
 ```
 
-Either way it installs as a plugin (no source to manage, updates via `/plugin update`); the curl
-script falls back to a git install when the `claude` CLI is absent.
+Then say `/memory-setup`. The agent shows you what it would remember from your last session, asks three questions, finds your history with your consent and backfills it. First results arrive in minutes. That is the last mechanical thing you do here - everything after it is conversation.
 
-Then say **`/memory-setup`** — the agent walks you through everything conversationally: shows you
-what it would remember from your last session, asks three questions, finds your history (with your
-consent), backfills in the background, and ends with "here's what I now know about you." Hooks and
-commands are live from install; memory data lives in the plugin's persistent data dir (survives
-updates); even the optional macOS background collector is installed by the agent during setup if
-you say yes.
+Requirements: Python 3.10+ (stdlib only) and Claude Code. A local model server is optional - with LM Studio running, extraction is free and transcripts never leave your machine. Without one, extraction runs on your Claude plan. The backend is detected per run, nothing to configure.
 
-**Or clone:**
+## Why markdown files
 
-```bash
-git clone https://github.com/noreff/memory-agent && cd memory-agent
-python3 install.py   # hooks, /memory-refresh command, macOS launchd extractor, manifest baseline
+- Every fact carries `sources` (the sessions it came from) and `conflicts` (what the note used to say, dated). Memory with receipts.
+- Your memory is yours to read, grep, edit and version. Wrong fact? Edit the note.
+- No vector DB, no daemon, no server. Retrieval is an index file the model reads, which holds up fine at personal scale - a few hundred notes.
+- A new topic needs 3+ independent facts before it earns a note. No one-fact stubs.
+- Injected memory is stripped before extraction, so the system never re-memorizes its own output.
+- Contradictions resolve by recency and the losing fact stays in the log. Nothing is silently overwritten.
+
+## How it works
+
+```
+capture  notice new transcripts              -> state/inbox/          no model, just file diffs
+refresh  inbox -> distill -> extract atoms   -> state/derived/atoms   cheap model, local-friendly
+merge    route atoms into notes, re-write    -> knowledge/            strong model
+         only the touched ones
+inject   knowledge/ -> into a new session                             read-only
 ```
 
-Requirements: Python 3.10+ (stdlib only — zero dependencies) and Claude Code itself. That's it:
-extraction defaults to `auto` and resolves to whatever you have — a local OpenAI-compatible server
-([LM Studio](https://lmstudio.ai) on `:1234`) if one is running, otherwise **your Claude plan**
-(the `claude` CLI, haiku for extraction), otherwise an `ANTHROPIC_API_KEY`. **A local model is a
-bonus, not a dependency**: when LM Studio is up, extraction becomes free and your transcripts never
-leave the machine; the system detects it automatically, per run. One policy line: the *background*
-extractor only ever uses the local backend (a daemon shouldn't spend your Claude plan headlessly) —
-without one, it captures only, and atoms extract on your next in-session `/memory-refresh`.
-Consolidation uses the Claude Code **Workflow** tool (ships with current Claude Code) or any
-backend via `mem.py merge --backend …`. The launchd extractor is macOS-only; on Linux schedule
-`mem.py capture && mem.py refresh --min-growth 75000` with cron/systemd. First run is always a safe
-baseline — existing history is never queued by accident; you bootstrap it deliberately with the
-backfill. Plugin installs customize everything by dropping a `config.json` into the plugin data
-dir (overrides the shipped defaults, survives updates).
+Two speeds on purpose. Extraction is high-volume and low-judgment, so a free local model handles it. Consolidation needs judgment - deciding which note a fact belongs to, what it supersedes - so a strong model handles that, a few calls a day. Note frontmatter is always built by code, never by the model.
 
-That's it. From now on: sessions are captured by hooks, a launchd agent extracts atoms in the
-background (local model, fully silent — log at `state/logs/refresh.log`), and consolidation drains
-whenever a session runs `/memory-refresh` (give it a sparse loop, e.g. `/loop 4h /memory-refresh`;
-replies are one line). Merges auto-apply with backups (`merge.autoPromote`; set `false` if you want
-a review gate — assembled notes then stage in `state/derived/merge/out/` until you promote).
+Atoms are routed against the existing knowledge base: into an existing note, to a gated new topic, or out as a duplicate. Merges apply automatically with timestamped backups (`merge.autoPromote: false` if you want a review gate instead). A periodic full recompile stays available as the deep clean.
 
-### Manual setup (what `install.py` does — for re-installing by hand)
+## Backfill your history
 
-1. **Install hooks.** Merge [`adapters/agent/claude_code/settings.snippet.json`](adapters/agent/claude_code/settings.snippet.json)
-   into `~/.claude/settings.json` under `"hooks"` (replace the path with your clone's absolute path).
-   SessionStart injects memory; SessionEnd/PreCompact enqueue the finished session (compute-free).
-2. **Baseline once:** `python3 mem.py capture --baseline` — records existing transcripts as *seen* so
-   only sessions created *after* now get captured (your backfill covers the rest).
-3. **(Optional) backfill** the KB from existing history first — see "Backfill" below.
+This is the main event. Point the backfill at everything you have - Claude Code transcripts, a ChatGPT export, old machine dumps, random docs. Agents figure out each format, chunk it, extract atoms, dedupe globally and write canonical notes. Raw files are never modified.
 
-Uninstall: `python3 install.py --uninstall`.
+From a Claude Code session:
+
+```
+Workflow -> { scriptPath: "<ROOT>/engine/backfill.js",
+              args: { rawDir: "/path/to/raw", derivedDir: "<ROOT>/state/derived",
+                      maxChunks: 400, model: "sonnet" } }
+```
+
+then
+
+```bash
+python3 mem.py adopt   # derived notes -> knowledge/ + index
+```
+
+Reference run: 103 sessions became 6,419 atoms and 33 notes in 47 minutes. Format hints live in `input/handlers/` - there is one for Claude Code transcripts and one for ChatGPT exports.
 
 ## CLI
 
 ```
-python3 mem.py status                  paths, enabled adapters, inbox depth
-python3 mem.py capture [--baseline]    scan adapters; enqueue new sessions (baseline = record only)
-python3 mem.py inject [--cwd DIR]      print the SessionStart payload (debug)
-python3 mem.py refresh [opts]          drain inbox → extract atoms into the atom store (atoms ONLY)
-    --backend NAME   override the extract backend: local | cloud | subscription | stub
-    --limit N        process at most N pending sessions
-    --dry-run        distill only; no model calls
-python3 mem.py merge [opts]            consolidate unrouted atoms into the KB (strong model)
-    --stage S        all | prepare | finalize | promote  (prepare/finalize = the mechanical halves
-                     driven by the merge Workflow; default all = completion-backend pipeline)
-    --backend NAME   override the route+synth backend for --stage all
-    --dry-run        route only: print the per-atom routing table, synthesize nothing
-    --promote        apply assembled notes to knowledge/ (else they stage for review)
+python3 mem.py status      paths, detected backend, queue depth
+python3 mem.py capture     scan for new sessions (first run baselines, nothing floods)
+python3 mem.py refresh     extract atoms from queued sessions
+python3 mem.py merge       consolidate atoms into notes
+python3 mem.py adopt       promote backfill output into the live KB
+python3 mem.py inject      print what a new session would receive
+python3 mem.py eval        score your memory against your own gold set
 ```
 
-Both are **safe by default**: `refresh` only writes the atom store; `merge` assembles notes under
-`state/derived/merge/out/` for review and touches `knowledge/` only on promote (with a backup under
-`state/backups/<ts>/`, an index rebuild, and only then marking atoms consumed — an abandoned staging
-run leaves everything unrouted, so re-running is always safe). Set `merge.autoPromote: true` once you
-trust it. The per-atom verdicts are: `into:<note>` (preferred — update/supersede an existing note),
-`new:<topic>` (gated: a note is created only at ≥ `merge.newNoteThreshold` atoms; below that the
-atoms wait in a pending pool), `duplicate`, `discard`.
+`refresh` and `merge` are batched, locked against concurrent runs, and safe to fire from cron. The `/memory-refresh` command wraps the whole cycle and replies in one line.
 
-## Configuration (`config.json`)
+## Config
 
 ```jsonc
 {
@@ -160,78 +90,41 @@ atoms wait in a pending pool), `duplicate`, `discard`.
       "transcripts": { "dir": "~/.my-tool/logs", "format": "auto" },
       "inject": { "file": "~/.my-tool/memory.md" } }
   ],
+  "merge": { "autoPromote": true, "newNoteThreshold": 3 },
   "model": {
-    "extract": { "backend": "local", "model": "qwen/qwen3.6-35b-a3b" },
+    "extract": { "backend": "auto",
+                 "models": { "local": "qwen/qwen3.6-35b-a3b", "subscription": "haiku" } },
     "route":   { "backend": "subscription", "model": "sonnet" },
     "merge":   { "backend": "subscription", "model": "sonnet" }
   }
 }
 ```
 
-- **`agents` is a list** — enable several tools; they share one KB (provenance tags the source).
-- **Add any tool with zero code** via a `generic` entry (transcripts dir + inject file).
-- **`model.<phase>.backend`** swaps compute per phase. `local` (LM Studio, free/private),
-  `cloud` (API key, metered), `subscription` (`claude -p`, no key, in-session only).
+`agents` is a list - several tools can feed one knowledge base, and any tool you can point at a folder works through the generic adapter with zero code. Plugin installs override config by dropping a `config.json` into the plugin data dir, which survives updates.
 
-## Backfill (populate the KB from your existing history — the key feature)
+## Eval
 
-Bootstrap the whole KB from everything you already have. The richest path is the Claude Code
-Workflow `engine/backfill.js`: tool-using subagents self-discover each file format, chunk huge
-sessions, extract atoms, globally de-duplicate, and synthesize canonical notes — raw files are
-never modified. From a Claude Code session:
-
-```
-Workflow tool → { scriptPath: "<ROOT>/engine/backfill.js",
-                  args: { rawDir: "/abs/path/to/raw", derivedDir: "/abs/path/to/state/derived",
-                          maxChunks: 400, model: "sonnet" } }
-```
-
-Then adopt the result into your live KB:
-
-```bash
-python3 mem.py adopt        # state/derived/notes/ → knowledge/ + index build
-```
-
-(Reference run: 103 sessions → 6,419 atoms → 33 canonical notes in ~47 minutes.) For a fully
-local/offline backfill, seed the inbox with your files and run `mem.py refresh` + `mem.py merge
---backend local`.
-
-## Eval (quality as a number, not a feeling)
-
-`mem.py eval` scores three things against your own gold set (`eval/` is git-ignored — personal):
-**recall** (re-extract frozen fixtures, do known facts reappear), **lookup** (pick the right note
-from the index, answer from its body — the intended flow), **inject** (what's answerable from the
-index alone). Every run appends to `eval/history.jsonl`, so prompt/model changes show up as score
-deltas, not vibes.
+`mem.py eval` scores three things against a gold set you write yourself (`eval/` is git-ignored, it is personal data): recall (re-extract frozen fixtures, do known facts come back), lookup (pick the right note from the index, answer from its body), inject (what is answerable from the index alone). Every run appends to `eval/history.jsonl`, so a prompt or model change shows up as a score delta instead of a feeling.
 
 ## Security model
 
-Memory built from conversations is an injection surface: transcript content could try to steer the
-models that process it. Structural defenses: the KB is only ever written by code, from staged
-artifacts, after the gate (`promote` backs up, then copies from `out/` — agents never write
-`knowledge/` directly); note frontmatter is built in code; atom payloads are fenced as untrusted
-data in every prompt; the system's own internal model calls are sentinel-tagged so they can't be
-re-memorized; raw transcripts are never modified. Residual risk: consolidation agents run with the
-host's tool permissions — review your platform's agent sandboxing if you process untrusted
-transcripts. Promoted notes are injected into future sessions, so treat `knowledge/` with the same
-care as CLAUDE.md.
+Memory built from conversations is an injection surface. The defenses are structural: the knowledge base is only written by code, from staged artifacts, after a gate. Note frontmatter is built in code. Atom payloads are fenced as untrusted data in every prompt. The system's own model calls are sentinel-tagged so they can never be re-memorized. Raw transcripts are read-only.
 
-## Backends & privacy
+Residual risk: consolidation agents run with your host's tool permissions, so check your platform's sandboxing if you process transcripts you don't trust. Promoted notes get injected into future sessions - treat `knowledge/` like you treat CLAUDE.md.
 
-The subscription is a flat-rate compute pool but only redeemable from inside a live session, so heavy
-processing piggybacks on sessions you're already in. Local models exist for privacy and to spare your
-rate-limit budget. Transcripts never leave your machine unless you choose a cloud/subscription backend
-for processing. `state/`, `knowledge/`, and raw transcripts are git-ignored.
+The background extractor never uses your Claude plan. It runs local-only, and if no local server is up it just queues work for your next in-session run.
 
-## Repo layout
+## Layout
 
 ```
-core/        config + on-disk protocol (pipeline.md) + prompts/ (route/merge/new-note rubrics)
-tests/       python3 -m unittest discover tests (stdlib, no deps)
-input/       format handlers + mechanical chunker (echo-suppressed: injected memory is never re-mined)
+core/        config, on-disk pipeline contract, prompt rubrics
+input/       format handlers + the mechanical chunker
 adapters/
-  agent/     base + claude_code/ (hooks, /memory-refresh command) + generic + contract (adapter.md)
-  model/     base + local/cloud/subscription/stub + contract (adapter.md)
-engine/      capture · inject · refresh (atoms) · merge.py + merge.js (consolidation) · backfill
-mem.py       CLI            install.py  hook + command installer
+  agent/     claude_code (hooks, commands, launchd), generic (any tool)
+  model/     local (LM Studio), cloud (API), subscription (claude CLI), stub
+engine/      capture, refresh, merge, backfill.js, evals, inject
+tests/       python3 -m unittest discover tests
+mem.py       the CLI        install.py  hooks + commands + macOS collector
 ```
+
+MIT. Built on a Mac, runs on anything with Python; the launchd collector is macOS-only (Linux: cron `mem.py capture && mem.py refresh`).
