@@ -2,7 +2,10 @@
 description: Conversational onboarding — taste first, three questions, consent-first discovery, quick backfill then full
 ---
 
-You are driving memory-agent's onboarding. Speak the user's language. ROOT resolution: if
+You are driving memory-agent's onboarding. Language: reply in whatever language the user writes to
+you IN THIS CONVERSATION; until they have written anything, use English. Never infer their language
+from transcripts or memory — history is data, not a signal about how they want to talk now. ROOT
+resolution: if
 `/ABS/PATH/TO/memory-agent` below looks like an unreplaced placeholder you are running from the
 PLUGIN install — use `${CLAUDE_PLUGIN_ROOT}` as ROOT, DATA = `${CLAUDE_PLUGIN_DATA}`, and prefix
 every python3 call with `MEMORY_AGENT_DATA="${CLAUDE_PLUGIN_DATA}"`. Otherwise ROOT =
@@ -13,7 +16,8 @@ every python3 call with `MEMORY_AGENT_DATA="${CLAUDE_PLUGIN_DATA}"`. Otherwise R
   change settings (extraction backend, auto-promote, background collector) / show status / run
   eval. Do what they pick, stop.
 - DATA/state/derived has atoms but knowledge/ has no notes → **RESUME**: say an earlier setup was
-  interrupted, then continue from step 5 (merge cycles → payoff).
+  interrupted, then continue from step 5 (merge cycles → payoff). If there are chunks but few/no
+  atoms (a backfill died with its session), re-run the quick pass — it is only minutes.
 - Otherwise → **FIRST RUN**, below. Keep it tight; "use defaults" is a complete answer everywhere;
   never narrate commands.
 
@@ -47,11 +51,15 @@ every python3 call with `MEMORY_AGENT_DATA="${CLAUDE_PLUGIN_DATA}"`. Otherwise R
    auto-baselines). For ONGOING sources (tools that keep producing) add a generic adapter entry to
    the config override instead of backfilling.
 
-5. **Quick pass first — minutes to wow, not an hour.** Run the backfill Workflow on their primary
-   history with `maxChunks: 60` ({scriptPath: "ROOT/engine/backfill.js", args: {rawDir: <dir>,
-   derivedDir: "DATA/state/derived", maxChunks: 60, model: "sonnet"}}), then
+5. **Quick pass first — minutes to wow, not an hour.** BEFORE starting, set the one expectation
+   that matters: "this runs on your Claude plan inside this session, so keep this window open —
+   about N minutes for the quick pass. You can keep chatting or working in here meanwhile. If the
+   window closes, re-running /memory-setup resumes." Then run the backfill Workflow on their
+   primary history with `maxChunks: 60` ({scriptPath: "ROOT/engine/backfill.js", args: {rawDir:
+   <dir>, derivedDir: "DATA/state/derived", maxChunks: 60, model: "sonnet"}}), then
    `python3 ROOT/mem.py adopt`, then merge cycles until `merge --stage check` shows newAtoms < 8.
-   Tell them up front roughly how long (a quick pass is minutes; they can keep working).
+   (With a local model server running, ongoing extraction also works outside sessions via the
+   background collector — sessions are only needed for consolidation.)
 
 6. **The payoff — always end here, it has four beats:**
    - "Here's what I now know about you" + ~5 specific facts read from DATA/knowledge/index.md.
