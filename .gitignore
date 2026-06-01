@@ -19,8 +19,8 @@ manifest.json
 .idea/
 *.bak-memagent*
 
-# Stray personal inputs at the root (meeting transcripts etc.) — never track
-huddle.md
+# Stray personal inputs dropped at the root (meeting transcripts, exports) — never track
+*.transcript.md
 
 # Research artifacts contain personal context — keep local
 docs/research/
