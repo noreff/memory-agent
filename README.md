@@ -1,5 +1,9 @@
 # memory-agent
 
+<p align="center">
+  <img src="docs/img/hero.gif" alt="memory-agent indexes your AI history, then recalls a fact with its conflict log" width="820">
+</p>
+
 Your coding agent forgets everything between sessions. The history is all there on disk - hundreds of transcripts where you explained your stack, your ports, your decisions. Nobody reads it.
 
 memory-agent reads it. It compiles your AI conversation history into a knowledge base of plain markdown notes, keeps it fresh in the background, and hands it to your agent when a session starts. Open a fresh session, ask "what do you know about me", get a real answer.
