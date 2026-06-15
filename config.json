@@ -13,7 +13,8 @@
 
   "capture": "native+poll",
   "inject": { "scope": "index+project", "maxNotes": 12 },
-  "merge": { "autoPromote": true, "newNoteThreshold": 3, "routeBatch": 300 },
+  "merge": { "autoPromote": true, "newNoteThreshold": 3, "routeBatch": 300,
+             "cycleMinAtoms": 8, "cycleMinGrowth": 75000 },
 
   "model": {
     "extract": { "backend": "auto",

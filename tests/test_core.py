@@ -135,5 +135,29 @@ class TestRefresh(unittest.TestCase):
             self.assertNotIn("routed", atoms[1])                  # new atom unrouted
 
 
+class TestSources(unittest.TestCase):
+    def test_register_loads_as_adapter_and_lists(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "exp").mkdir()
+            cfg = _cfg(d)
+            from engine import sources as S
+            from adapters.agent.loader import load_adapters
+            rec = S.add(cfg, str(d / "exp"), fmt="auto", id="myexport")
+            self.assertEqual(rec["id"], "myexport")
+            self.assertEqual([s["id"] for s in S.load(cfg)], ["myexport"])
+            # a registered folder surfaces as a generic adapter → captured by the same pipeline
+            self.assertIn("myexport", [a.name for a in load_adapters(cfg)])
+            # places() lists it with the output location surfaced (catches CACHE/DATA-style splits)
+            info = S.places(cfg)
+            self.assertEqual(info["sources"][0]["id"], "myexport")
+            self.assertTrue(info["knowledge"].endswith("kb"))
+            # duplicate id is rejected; removal is clean
+            with self.assertRaises(ValueError):
+                S.add(cfg, str(d / "exp"), id="myexport")
+            self.assertTrue(S.remove(cfg, "myexport"))
+            self.assertEqual(S.load(cfg), [])
+
+
 if __name__ == "__main__":
     unittest.main()
