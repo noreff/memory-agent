@@ -11,10 +11,15 @@ mkdir -p "$LOG_DIR"
   # Background extraction is LOCAL-ONLY by policy: a daemon must never shell out to the Claude
   # CLI headlessly. No local server -> capture only; atoms extract on the next in-session
   # /memory-refresh (which may use any backend, because the user initiated it).
-  if curl -s -m 2 "http://localhost:1234/v1/models" > /dev/null 2>&1; then
+  # `probe-local` is the SAME Python discovery `status` uses (any OpenAI-compatible server:
+  # LM Studio / Ollama / llama.cpp / Jan), so shell and Python always agree on what's reachable.
+  if SERVER=$(/usr/bin/python3 "$ROOT/mem.py" probe-local); then
+    echo "local server: $SERVER"
     /usr/bin/python3 "$ROOT/mem.py" refresh --backend local --min-growth 75000
   else
-    echo "local model server unreachable — capture only this cycle"
+    echo "$SERVER — capture only this cycle."
+    echo "  To enable free, private local extraction, run any OpenAI-compatible model server:"
+    echo "  Ollama (always-on service, survives reboots) or LM Studio (GUI, keep it open)."
   fi
   /usr/bin/python3 "$ROOT/mem.py" merge --stage check
 } >> "$LOG_DIR/refresh.log" 2>&1
