@@ -98,7 +98,7 @@ capabilities = { tools: bool, structuredOutput: "schema"|"json"|"none", maxConte
 | Backend | `run` is… | tools | Used for |
 |---|---|---|---|
 | **subscription** | Workflow `agent(prompt,{schema,model})` — no API key | ✅ | ingest (self-discovers format), cluster (scripts 6k atoms), extract, synth |
-| **local** | POST LM Studio `/chat/completions`, **plain JSON** + lenient-parse/retry (a3b path) | ❌ | per-unit extract & synth |
+| **local** | POST `/chat/completions` to any auto-discovered OpenAI-compatible server (LM Studio / Ollama / llama.cpp / Jan), reusing a model already loaded, **plain JSON** + lenient-parse/retry (a3b path) | ❌ | per-unit extract & synth |
 | **cloud** | Anthropic Messages / OpenAI-compatible, real tools + structured output | ⚙️ | any phase |
 
 **Per-phase strategy** (from `config.model.<phase>`):
@@ -149,7 +149,12 @@ memory-agent/
   },
   "backends": {
     "subscription": { "kind": "agent" },
-    "local": { "kind": "completion", "baseUrl": "http://localhost:1234/v1" },
+    "local": { "kind": "completion",                   // auto-discovered: first healthy server wins.
+               "discover": ["http://localhost:1234/v1",   // LM Studio
+                            "http://localhost:11434/v1",   // Ollama
+                            "http://localhost:8080/v1",    // llama.cpp
+                            "http://localhost:1337/v1"] }, // Jan  (baseUrl, if set, is tried first)
+
     "cloud": { "kind": "completion", "baseUrl": "https://api.anthropic.com", "apiKeyEnv": "ANTHROPIC_API_KEY" }
   }
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """memory-agent CLI — manual driver for the live layer (also the /loop entrypoint).
 
-  python3 mem.py status              show KB/state paths, enabled adapters, inbox depth
+  python3 mem.py status              show KB/state paths, discovered local server, backend, depth
+  python3 mem.py probe-local        print the discovered local server + model, exit 0/1 (for scripts)
   python3 mem.py capture            scan enabled adapters; enqueue new sessions (incremental)
   python3 mem.py capture --baseline record current transcripts as seen, enqueue nothing
   python3 mem.py inject [--cwd D]   print the SessionStart payload (debug)
@@ -49,10 +50,22 @@ from adapters.model.loader import backend_for_phase  # noqa: E402
 
 
 def cmd_status(cfg, args):
-    from adapters.model.loader import detect_backend
+    from adapters.model.loader import (_local_bases, detect_backend, probe_local,
+                                       resolve_local_model)
     n = sum(1 for _ in cfg.inbox.open()) if cfg.inbox.exists() else 0
     print(f"knowledge: {cfg.knowledge_dir}")
     print(f"state:     {cfg.state_dir}")
+    found = probe_local(cfg)
+    if found:
+        base, models = found
+        print(f"local server: {base}  model={resolve_local_model(cfg, models)}")
+    else:
+        looked = ", ".join(_local_bases(cfg))
+        try:
+            fallback = detect_backend(cfg)  # what auto falls through to with no local server
+        except RuntimeError:
+            fallback = "none — install `claude` CLI or set ANTHROPIC_API_KEY"
+        print(f"local server: none found (looked at: {looked}); extraction will use {fallback}")
     try:
         print(f"extract backend (auto): {detect_backend(cfg)}")
     except RuntimeError as e:
@@ -78,6 +91,20 @@ def cmd_capture(cfg, args):
 
 def cmd_inject(cfg, args):
     print(build_payload(cfg, cwd=args.cwd))
+
+
+def cmd_probe_local(cfg, args):
+    """Discovery probe shared by the shell (launchd) and Python so the two always agree: print the
+    chosen local server + resolved model and exit 0, or print where it looked and exit 1. Keeps the
+    background script from hardcoding a single :1234 curl."""
+    from adapters.model.loader import _local_bases, probe_local, resolve_local_model
+    found = probe_local(cfg)
+    if found:
+        base, models = found
+        print(f"{base} {resolve_local_model(cfg, models)}")
+        return 0
+    print(f"no local model server found (looked at: {', '.join(_local_bases(cfg))})")
+    return 1
 
 
 def cmd_refresh(cfg, args):
@@ -312,6 +339,7 @@ def main():
     p = argparse.ArgumentParser(prog="mem")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
+    sub.add_parser("probe-local")
     c = sub.add_parser("capture")
     c.add_argument("--baseline", action="store_true")
     i = sub.add_parser("inject")
@@ -354,9 +382,12 @@ def main():
     e.add_argument("--backend", default=None)
     args = p.parse_args()
     cfg = cfgmod.load()
-    {"status": cmd_status, "capture": cmd_capture, "inject": cmd_inject,
-     "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest, "cycle": cmd_cycle,
-     "sources": cmd_sources, "adopt": cmd_adopt, "eval": cmd_eval}[args.cmd](cfg, args)
+    rc = {"status": cmd_status, "probe-local": cmd_probe_local, "capture": cmd_capture,
+          "inject": cmd_inject, "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest,
+          "cycle": cmd_cycle, "sources": cmd_sources, "adopt": cmd_adopt,
+          "eval": cmd_eval}[args.cmd](cfg, args)
+    if isinstance(rc, int):
+        sys.exit(rc)
 
 
 if __name__ == "__main__":
