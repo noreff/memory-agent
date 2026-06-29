@@ -1,15 +1,17 @@
 #!/bin/sh
-# memory-agent autonomous cycle (launchd on macOS / cron on Linux): ONE tick of
-# capture -> local extract -> local merge+promote, fully offline, $0, OUTSIDE any chat session.
-# All the logic lives in `mem.py cycle` (LOCAL-ONLY by policy — it never shells out to the Claude
-# CLI). The strong-model (subscription) merge is now just an OPTIONAL quality pass via the
-# in-session /memory-refresh command; freshness no longer depends on a session being open.
+# memory-agent autonomous cycle (launchd): capture -> local extract -> ingest-drain, $0, offline.
+# Resumable + crash-safe: durable atoms, flock auto-released on death, skip-on-failure in ingest.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$ROOT/state/logs"
 mkdir -p "$LOG_DIR"
+LMS="$HOME/.lmstudio/bin/lms"
 {
   echo "── $(date '+%Y-%m-%d %H:%M:%S') cycle"
+  # ensure local models loaded with adequate context (idempotent: only loads if missing)
+  if [ -x "$LMS" ]; then
+    "$LMS" ps 2>/dev/null | grep -q "qwen3.6-35b-a3b" || "$LMS" load qwen/qwen3.6-35b-a3b --context-length 32768 -y 2>/dev/null || true
+    "$LMS" ps 2>/dev/null | grep -q "qwen3.6-27b"     || "$LMS" load qwen/qwen3.6-27b --context-length 65536 -y 2>/dev/null || true
+  fi
   /usr/bin/python3 "$ROOT/mem.py" cycle
 } >> "$LOG_DIR/refresh.log" 2>&1
-# keep the log bounded (~last 2000 lines)
 tail -n 2000 "$LOG_DIR/refresh.log" > "$LOG_DIR/refresh.log.tmp" && mv "$LOG_DIR/refresh.log.tmp" "$LOG_DIR/refresh.log"
