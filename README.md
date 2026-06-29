@@ -25,7 +25,9 @@ Already in Claude Code? Same result without leaving it:
 
 Then say `/memory-setup`. The agent shows you what it would remember from your last session, asks three questions, finds your history with your consent and backfills it. First results arrive in minutes. That is the last mechanical thing you do here - everything after it is conversation.
 
-Requirements: Python 3.10+ (stdlib only) and Claude Code. A local model server is optional - with LM Studio running, extraction is free and transcripts never leave your machine. Without one, extraction runs on your Claude plan. The backend is detected per run, nothing to configure.
+Requirements: Python 3.10+ (stdlib only) and Claude Code. A local model server is optional and nothing new to install - the system auto-discovers whatever OpenAI-compatible server you already run (LM Studio, Ollama, llama.cpp, Jan, ...) and reuses a model you already have loaded, so extraction is free and transcripts never leave your machine with no re-download. With no local server, extraction transparently uses your Claude plan. The backend is detected per run, nothing to configure.
+
+For always-on background extraction, Ollama is the easy pick (it runs as a service and survives reboots); if you already use LM Studio, just keep it open. `mem.py status` shows the discovered server and model, or what extraction will fall back to.
 
 ## Why markdown files
 
@@ -73,7 +75,8 @@ Reference run: 103 sessions became 6,419 atoms and 33 notes in 47 minutes. Forma
 ## CLI
 
 ```
-python3 mem.py status      paths, detected backend, queue depth
+python3 mem.py status      paths, discovered local server + model, detected backend, queue depth
+python3 mem.py probe-local print the discovered local server + model (exit 0), or where it looked (exit 1)
 python3 mem.py capture     scan for new sessions (first run baselines, nothing floods)
 python3 mem.py refresh     extract atoms from queued sessions
 python3 mem.py merge       consolidate atoms into notes
@@ -125,7 +128,7 @@ core/        config, on-disk pipeline contract, prompt rubrics
 input/       format handlers + the mechanical chunker
 adapters/
   agent/     claude_code (hooks, commands, launchd), generic (any tool)
-  model/     local (LM Studio), cloud (API), subscription (claude CLI), stub
+  model/     local (any OpenAI-compatible server, auto-discovered), cloud (API), subscription (claude CLI), stub
 engine/      capture, refresh, merge, backfill.js, evals, inject
 tests/       python3 -m unittest discover tests
 mem.py       the CLI        install.py  hooks + commands + macOS collector
