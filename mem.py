@@ -18,6 +18,17 @@
        --backend NAME   override route+synth backend for --stage all
        --dry-run        route only: print the per-atom routing table, synthesize nothing
        --promote        promote assembled notes into knowledge/ (else stage for review)
+  python3 mem.py cycle [opts]       ONE autonomous tick (the single launchd/cron/manual entrypoint):
+                        capture -> local extract -> local merge+promote, gated by backlog. LOCAL-ONLY
+                        by policy, so it is safe to run unattended; degrades to capture-only when no
+                        local server is up. This is how memory stays fresh with no session, $0.
+       --min-growth N   defer active sessions grown < N bytes (default: merge.cycleMinGrowth/75000)
+       --min-atoms N    skip the merge below N unrouted atoms (default: merge.cycleMinAtoms/8)
+  python3 mem.py sources            the registry of PLACES indexed (one KB, many sources):
+                        (no arg) list every place + live stats, and where knowledge/state resolve to
+       add <path>       register a folder (export / dump / docs) as a first-class incremental source
+            --format F --id ID --backfill (label only) --ingest (enqueue now vs the safe baseline)
+       remove <id>      unregister a place (state history is left intact)
 """
 import argparse
 import json
@@ -139,6 +150,147 @@ def cmd_merge(cfg, args):
                           "--backend local|cloud, or install the missing CLI"}))
 
 
+def cmd_ingest(cfg, args):
+    """Subject-centric consolidation (replaces the monolithic route): place atoms in small safe
+    chunks, then synth one note per subject. Drains the whole backlog in one run, all local."""
+    from engine.lock import Busy, pipeline_lock
+    from engine.ingest import ingest
+    place = backend_for_phase(cfg, "route", args.backend)
+    synth = backend_for_phase(cfg, "merge", args.backend)
+    print(f"placement: {place.name}({getattr(place, 'model', '?')})  "
+          f"synth: {synth.name}({getattr(synth, 'model', '?')})")
+    try:
+        with pipeline_lock(cfg, "merge"):
+            r = ingest(cfg, place, synth, limit=args.limit, promote=not args.no_promote)
+        print(json.dumps(r))
+    except Busy as e:
+        print(f"ingest: skipped — {e}")
+
+
+def cmd_cycle(cfg, args):
+    """One autonomous tick — the single scheduler entrypoint (launchd / cron / manual):
+    capture -> local extract -> local merge+promote, gated by backlog. LOCAL-ONLY by policy, so it
+    is safe to run unattended in a daemon (it never redeems the subscription / a paid backend
+    headlessly). Degrades cleanly: no local server up -> capture and queue, then return. This is the
+    whole 'always fresh, no session, $0' loop in one verb."""
+    from engine.lock import Busy, pipeline_lock
+    from engine.merge import count_unrouted, run_all
+    from adapters.model.loader import local_reachable, backend_for_phase
+    min_growth = args.min_growth if args.min_growth is not None \
+        else int(cfg.merge_cfg.get("cycleMinGrowth", 75000))
+    min_atoms = args.min_atoms if args.min_atoms is not None \
+        else int(cfg.merge_cfg.get("cycleMinAtoms", 8))
+
+    # 1. capture — compute-free manifest diff; always runs
+    adapters = load_adapters(cfg)
+    if not adapters:
+        print("cycle: no enabled adapters")
+        return
+    scanned = enqueued = 0
+    for a in adapters:
+        r = capture(a, cfg)
+        scanned += r["scanned"]
+        enqueued += r["enqueued"]
+    print(f"capture: scanned={scanned} enqueued={enqueued}")
+
+    # 2. extract — LOCAL ONLY. A daemon must not fall through the auto-chain to the subscription;
+    #    no local server => leave the work queued for the next tick.
+    if not local_reachable(cfg):
+        print("cycle: local model server unreachable — captured only, atoms queued for next tick")
+        return
+    extract = backend_for_phase(cfg, "extract", "local")
+    print(f"extract backend: {extract.name} ({getattr(extract, 'model', '?')})")
+    try:
+        with pipeline_lock(cfg, "refresh"):
+            r = refresh(cfg, extract, min_growth=min_growth)
+        print(f"refresh: sessions={r['sessions']} atoms={r['atoms']}")
+    except Busy as e:
+        print(f"cycle: refresh skipped — {e}")
+        return
+
+    # 3. merge + promote — gated: only spin the model for a full route/synth when the backlog is
+    #    worth it; otherwise memory is already fresh. Batched (merge.routeBatch) — a large backlog
+    #    drains across successive ticks rather than hogging the model for one long run.
+    n = count_unrouted(cfg)
+    if n < min_atoms:
+        print(f"merge: {n} unrouted < {min_atoms} — fresh, nothing to consolidate")
+        return
+    # Drain the whole backlog via ingest (subject-centric, local-safe) in durable steps that each
+    # promote — so an external kill at any point loses at most one step, and the next tick resumes
+    # from the durable atom state (flock auto-releases on death; launchd restarts the tick).
+    from engine.ingest import ingest
+    place = backend_for_phase(cfg, "route", "local")
+    synth = backend_for_phase(cfg, "merge", "local")
+    step = int(cfg.merge_cfg.get("ingestBatch", 100))
+    print(f"merge: {n} unrouted >= {min_atoms} — draining on local "
+          f"(place={place.name}:{getattr(place, 'model', '?')}, "
+          f"synth={synth.name}:{getattr(synth, 'model', '?')}, step={step})")
+    try:
+        with pipeline_lock(cfg, "merge"):
+            prev, stuck = None, 0
+            while True:
+                n = count_unrouted(cfg)
+                if n < min_atoms:
+                    print(f"cycle: drained — {n} unrouted left")
+                    break
+                if prev is not None and n >= prev:
+                    stuck += 1
+                    if stuck >= 2:
+                        print(f"cycle: no progress at {n} — stopping (next tick retries)")
+                        break
+                else:
+                    stuck = 0
+                prev = n
+                ingest(cfg, place, synth, limit=step, promote=True)
+    except Busy as e:
+        print(f"cycle: merge skipped — {e}")
+
+
+def cmd_sources(cfg, args):
+    from engine import sources as S
+    if args.action == "add":
+        if not args.target:
+            print("usage: mem.py sources add <path> [--format F] [--id ID] [--backfill] [--ingest]")
+            return
+        try:
+            rec = S.add(cfg, args.target, fmt=args.format or "auto", id=args.id,
+                        kind="backfill" if args.backfill else "generic")
+        except ValueError as e:
+            print(f"sources: {e}")
+            return
+        # Safe default: baseline the new place (record current files as seen, enqueue nothing) so a
+        # large folder can't flood the inbox. --ingest enqueues everything for incremental extraction.
+        from adapters.agent.generic import GenericAdapter
+        a = GenericAdapter.from_config({"adapter": "generic", "name": rec["id"],
+                                        "transcripts": {"dir": rec["path"], "format": rec["format"]}})
+        r = capture(a, cfg, baseline=not args.ingest)
+        print(f"registered [{rec['kind']}] {rec['id']} -> {rec['path']}")
+        if args.ingest:
+            print(f"  ingest: scanned={r['scanned']} enqueued={r['enqueued']} — "
+                  f"run `mem.py cycle` to extract (or the backfill Workflow for bulk global-clustering)")
+        else:
+            print(f"  baselined {r['scanned']} existing files (not enqueued). For the initial bulk "
+                  f"use the backfill Workflow; new files from now on capture incrementally.")
+        return
+    if args.action == "remove":
+        if not args.target:
+            print("usage: mem.py sources remove <id>")
+            return
+        if S.remove(cfg, args.target):
+            print(f"removed source '{args.target}' (its manifest/atoms stay as harmless history)")
+        else:
+            print(f"no source with id '{args.target}'")
+        return
+    info = S.places(cfg)
+    print(f"knowledge: {info['knowledge']}  ({info['notes']} notes)")
+    print(f"state:     {info['state']}")
+    print(f"sources ({len(info['sources'])}):")
+    for s in info["sources"]:
+        print(f"  [{s['kind']:8}] {s['id']:24} files={s['files']:<5} captured={s['captured']:<5} "
+              f"atoms={s['atoms']:<6} last={s['last']:<11} {s['status']}")
+        print(f"  {'':10} {s['path']}")
+
+
 def cmd_adopt(cfg, args):
     """Backfill last mile: promote state/derived/notes/*.md into knowledge/ and build the index."""
     from engine.merge import rebuild_index
@@ -204,6 +356,25 @@ def main():
     m.add_argument("--backend", default=None)
     m.add_argument("--dry-run", action="store_true")
     m.add_argument("--promote", action="store_true")
+    ing = sub.add_parser("ingest")
+    ing.add_argument("--backend", default=None)
+    ing.add_argument("--limit", type=int, default=None, help="process at most N unrouted atoms")
+    ing.add_argument("--no-promote", action="store_true", help="stage notes but do not write to KB")
+    sc = sub.add_parser("sources")
+    sc.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list")
+    sc.add_argument("target", nargs="?", default=None, help="folder path (add) or source id (remove)")
+    sc.add_argument("--format", default=None)
+    sc.add_argument("--id", default=None)
+    sc.add_argument("--backfill", action="store_true", help="label the place as bulk-backfilled")
+    sc.add_argument("--ingest", action="store_true",
+                    help="enqueue current contents now (default: baseline, capture new files only)")
+    cy = sub.add_parser("cycle")
+    cy.add_argument("--min-growth", type=int, default=None,
+                    help="defer active sessions grown fewer bytes than this "
+                         "(default: merge.cycleMinGrowth or 75000)")
+    cy.add_argument("--min-atoms", type=int, default=None,
+                    help="skip the local merge below this many unrouted atoms "
+                         "(default: merge.cycleMinAtoms or 8)")
     a = sub.add_parser("adopt")
     a.add_argument("--force", action="store_true")
     e = sub.add_parser("eval")
@@ -212,7 +383,8 @@ def main():
     args = p.parse_args()
     cfg = cfgmod.load()
     rc = {"status": cmd_status, "probe-local": cmd_probe_local, "capture": cmd_capture,
-          "inject": cmd_inject, "refresh": cmd_refresh, "merge": cmd_merge, "adopt": cmd_adopt,
+          "inject": cmd_inject, "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest,
+          "cycle": cmd_cycle, "sources": cmd_sources, "adopt": cmd_adopt,
           "eval": cmd_eval}[args.cmd](cfg, args)
     if isinstance(rc, int):
         sys.exit(rc)

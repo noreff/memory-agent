@@ -19,4 +19,9 @@ def load_adapters(cfg):
             continue
         cls = REGISTRY.get(entry.get("adapter", "generic"), GenericAdapter)
         out.append(cls.from_config(entry))
+    # registered folders (mem.py sources add) are first-class sources: they load as generic adapters
+    # so the same capture/cycle pipeline re-scans them incrementally. (lazy import avoids a cycle)
+    from engine.sources import as_adapter_entries
+    for entry in as_adapter_entries(cfg):
+        out.append(GenericAdapter.from_config(entry))
     return out
