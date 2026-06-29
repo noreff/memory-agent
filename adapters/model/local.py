@@ -1,11 +1,23 @@
-"""Local completion backend = LM Studio (OpenAI-compatible). Plain JSON, NEVER response_format
-json_schema: LM Studio's structured output (Outlines) doesn't forward a repetition penalty to the
-MLX backend, sending MoE models into degenerate loops. Ask for JSON, parse leniently in code."""
+"""Local completion backend = any OpenAI-compatible server (LM Studio, Ollama, llama.cpp, Jan, …).
+Plain JSON, NEVER response_format json_schema: LM Studio's structured output (Outlines) doesn't
+forward a repetition penalty to the MLX backend, sending MoE models into degenerate loops. Ask for
+JSON, parse leniently in code."""
 from __future__ import annotations
 import json
 import urllib.request
 
 from .base import ModelBackend, Result, Task
+
+
+def list_models(base_url: str, timeout: float = 1.5) -> list[str]:
+    """GET {base}/models on an OpenAI-compatible server → list of model ids ([] if unreachable).
+    Cheap discovery probe: a 200 with >=1 id means the server is healthy and has a usable model."""
+    try:
+        req = urllib.request.Request(f"{base_url.rstrip('/')}/models")
+        resp = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+    except Exception:
+        return []
+    return [m["id"] for m in resp.get("data", []) if isinstance(m, dict) and m.get("id")]
 
 
 class LocalBackend(ModelBackend):

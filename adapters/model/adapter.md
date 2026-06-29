@@ -20,7 +20,7 @@ class ModelBackend:
 
 | name | `run` is… | tools | needs |
 |---|---|---|---|
-| `local` | LM Studio `/chat/completions`, **plain JSON** (never json_schema — MLX loops) | no | LM Studio on `:1234` |
+| `local` | any auto-discovered OpenAI-compatible `/chat/completions` (LM Studio / Ollama / llama.cpp / Jan), **plain JSON** (never json_schema — MLX loops) | no | any local server up (else degrades) |
 | `cloud` | Anthropic Messages API (or OpenAI-compatible via `baseUrl`) | no | API key in `apiKeyEnv` ($) |
 | `subscription` | headless `claude -p` — no key, in-session use only (DESIGN 'прикол') | yes | `claude` CLI |
 | `stub` | canned output | no | — (testing) |
