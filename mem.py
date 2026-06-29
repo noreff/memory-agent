@@ -123,6 +123,23 @@ def cmd_merge(cfg, args):
                           "--backend local|cloud, or install the missing CLI"}))
 
 
+def cmd_ingest(cfg, args):
+    """Subject-centric consolidation (replaces the monolithic route): place atoms in small safe
+    chunks, then synth one note per subject. Drains the whole backlog in one run, all local."""
+    from engine.lock import Busy, pipeline_lock
+    from engine.ingest import ingest
+    place = backend_for_phase(cfg, "route", args.backend)
+    synth = backend_for_phase(cfg, "merge", args.backend)
+    print(f"placement: {place.name}({getattr(place, 'model', '?')})  "
+          f"synth: {synth.name}({getattr(synth, 'model', '?')})")
+    try:
+        with pipeline_lock(cfg, "merge"):
+            r = ingest(cfg, place, synth, limit=args.limit, promote=not args.no_promote)
+        print(json.dumps(r))
+    except Busy as e:
+        print(f"ingest: skipped — {e}")
+
+
 def cmd_cycle(cfg, args):
     """One autonomous tick — the single scheduler entrypoint (launchd / cron / manual):
     capture -> local extract -> local merge+promote, gated by backlog. LOCAL-ONLY by policy, so it
@@ -171,10 +188,33 @@ def cmd_cycle(cfg, args):
     if n < min_atoms:
         print(f"merge: {n} unrouted < {min_atoms} — fresh, nothing to consolidate")
         return
-    print(f"merge: {n} unrouted >= {min_atoms} — consolidating on local")
+    # Drain the whole backlog via ingest (subject-centric, local-safe) in durable steps that each
+    # promote — so an external kill at any point loses at most one step, and the next tick resumes
+    # from the durable atom state (flock auto-releases on death; launchd restarts the tick).
+    from engine.ingest import ingest
+    place = backend_for_phase(cfg, "route", "local")
+    synth = backend_for_phase(cfg, "merge", "local")
+    step = int(cfg.merge_cfg.get("ingestBatch", 100))
+    print(f"merge: {n} unrouted >= {min_atoms} — draining on local "
+          f"(place={place.name}:{getattr(place, 'model', '?')}, "
+          f"synth={synth.name}:{getattr(synth, 'model', '?')}, step={step})")
     try:
         with pipeline_lock(cfg, "merge"):
-            run_all(cfg, backend_override="local", promote=True)
+            prev, stuck = None, 0
+            while True:
+                n = count_unrouted(cfg)
+                if n < min_atoms:
+                    print(f"cycle: drained — {n} unrouted left")
+                    break
+                if prev is not None and n >= prev:
+                    stuck += 1
+                    if stuck >= 2:
+                        print(f"cycle: no progress at {n} — stopping (next tick retries)")
+                        break
+                else:
+                    stuck = 0
+                prev = n
+                ingest(cfg, place, synth, limit=step, promote=True)
     except Busy as e:
         print(f"cycle: merge skipped — {e}")
 
@@ -288,6 +328,10 @@ def main():
     m.add_argument("--backend", default=None)
     m.add_argument("--dry-run", action="store_true")
     m.add_argument("--promote", action="store_true")
+    ing = sub.add_parser("ingest")
+    ing.add_argument("--backend", default=None)
+    ing.add_argument("--limit", type=int, default=None, help="process at most N unrouted atoms")
+    ing.add_argument("--no-promote", action="store_true", help="stage notes but do not write to KB")
     sc = sub.add_parser("sources")
     sc.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list")
     sc.add_argument("target", nargs="?", default=None, help="folder path (add) or source id (remove)")
@@ -311,8 +355,8 @@ def main():
     args = p.parse_args()
     cfg = cfgmod.load()
     {"status": cmd_status, "capture": cmd_capture, "inject": cmd_inject,
-     "refresh": cmd_refresh, "merge": cmd_merge, "cycle": cmd_cycle, "sources": cmd_sources,
-     "adopt": cmd_adopt, "eval": cmd_eval}[args.cmd](cfg, args)
+     "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest, "cycle": cmd_cycle,
+     "sources": cmd_sources, "adopt": cmd_adopt, "eval": cmd_eval}[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":

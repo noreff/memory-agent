@@ -27,7 +27,7 @@ Rules:
 - If you can read note files, you MAY open 1–2 notes to disambiguate a routing — never edit them.
 - Be consistent: atoms about the same subject in this batch must route to the same destination.
 
-Output: JSON only, no prose, no fences:
-{"decisions":[{"id":"<atom id>","verdict":"into|new|duplicate|discard","target":"<slug if into>",
-"topic":"<label if new>","type":"<note-type if new>","claim":"<echo the atom claim>",
-"source":"<echo>","date":"<echo>","reason":"<short>"}]}
+Output: the JSON object below and NOTHING else — no prose, no fences, no step-by-step thinking.
+Start your reply with `{` immediately. Keep each decision MINIMAL: the engine already has every
+atom's text by `id`, so do NOT echo claim/source/date or add a reason — only these keys:
+{"decisions":[{"id":"<atom id>","verdict":"into|new|duplicate|discard","target":"<slug if into>","topic":"<label if new>","type":"<note-type if new>"}]}
