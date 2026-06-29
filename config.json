@@ -24,7 +24,9 @@
 
   "backends": {
     "subscription": { "kind": "agent" },
-    "local": { "kind": "completion", "baseUrl": "http://localhost:1234/v1" },
+    "local": { "kind": "completion",
+               "discover": ["http://localhost:1234/v1", "http://localhost:11434/v1",
+                            "http://localhost:8080/v1", "http://localhost:1337/v1"] },
     "cloud": { "kind": "completion", "baseUrl": "https://api.anthropic.com", "apiKeyEnv": "ANTHROPIC_API_KEY" }
   }
 }

@@ -15,6 +15,7 @@ from engine.capture import capture             # noqa: E402
 from engine.refresh import refresh             # noqa: E402
 from input.chunk import distill                # noqa: E402
 from adapters.agent.generic import GenericAdapter  # noqa: E402
+from adapters.model import loader as L           # noqa: E402
 from adapters.model.stub import StubBackend    # noqa: E402
 
 
@@ -133,6 +134,76 @@ class TestRefresh(unittest.TestCase):
             self.assertEqual(len(atoms), 2)                       # appended, not rewritten
             self.assertEqual(atoms[0]["routed"]["to"], "note-x")  # mark untouched
             self.assertNotIn("routed", atoms[1])                  # new atom unrouted
+
+
+class TestLocalDiscovery(unittest.TestCase):
+    """Backend auto-discovery + model resolution. urllib is never touched: we monkeypatch
+    list_models so the tests need no real server."""
+
+    def _cfg(self, local=None, extract_local=None):
+        backends = {"local": local} if local is not None else {}
+        model = {"extract": {"backend": "auto",
+                             "models": ({"local": extract_local} if extract_local else {})}}
+        return cfgmod.Config({"paths": {"knowledge": "k", "state": "s"},
+                              "agents": [], "model": model, "backends": backends}, Path("/tmp"))
+
+    def _patch(self, healthy: dict):
+        """healthy: {base_url: [model_ids]} — every other URL probes as down ([])."""
+        orig = L.list_models
+        L.list_models = lambda base, timeout=1.5: list(healthy.get(base.rstrip("/"), []))
+        self.addCleanup(lambda: setattr(L, "list_models", orig))
+
+    def test_discovery_picks_first_healthy_url(self):
+        # LM Studio (:1234) down, Ollama (:11434) up → discovery skips to the healthy one.
+        self._patch({"http://localhost:11434/v1": ["llama3:8b"]})
+        cfg = self._cfg(local={})  # uses DEFAULT_DISCOVER order
+        base, models = L.probe_local(cfg)
+        self.assertEqual(base, "http://localhost:11434/v1")
+        self.assertEqual(models, ["llama3:8b"])
+        self.assertTrue(L.local_reachable(cfg))
+        self.assertEqual(L.detect_backend(cfg), "local")
+
+    def test_baseurl_is_tried_first_for_backcompat(self):
+        # A configured baseUrl wins over the default discover list even if a default is also up.
+        self._patch({"http://localhost:9999/v1": ["custom-model"],
+                     "http://localhost:1234/v1": ["lmstudio-model"]})
+        cfg = self._cfg(local={"baseUrl": "http://localhost:9999/v1"})
+        self.assertEqual(L.probe_local(cfg)[0], "http://localhost:9999/v1")
+
+    def test_model_resolution_prefers_configured_else_capable(self):
+        models = ["small-1.5b", "big-70b-instruct", "mid-7b"]
+        cfg = self._cfg(extract_local="big-70b-instruct")
+        self.assertEqual(L.resolve_local_model(cfg, models), "big-70b-instruct")
+        # configured id absent on the server → heuristic falls back to the largest by name
+        cfg = self._cfg(extract_local="not-loaded")
+        self.assertEqual(L.resolve_local_model(cfg, models), "big-70b-instruct")
+        # nothing configured → still the most capable available
+        self.assertEqual(L.resolve_local_model(self._cfg(), models), "big-70b-instruct")
+        # empty server → None (caller degrades, never crashes)
+        self.assertIsNone(L.resolve_local_model(self._cfg(), []))
+
+    def test_build_backend_points_at_live_server_and_model(self):
+        self._patch({"http://localhost:11434/v1": ["llama3:8b"]})
+        b = L.build_backend("local", self._cfg(local={}))
+        self.assertEqual(b.base_url, "http://localhost:11434/v1")
+        self.assertEqual(b.model, "llama3:8b")
+
+    def test_none_found_returns_right_fallback_without_raising(self):
+        self._patch({})  # no server anywhere
+        cfg = self._cfg(local={})
+        self.assertFalse(L.local_reachable(cfg))
+        self.assertIsNone(L.probe_local(cfg))
+        # auto must fall through the chain; with no claude CLI and no key it raises a clear error
+        orig_which, orig_env = L.shutil.which, dict(L.os.environ)
+        L.shutil.which = lambda *_: None
+        L.os.environ.pop("ANTHROPIC_API_KEY", None)
+        self.addCleanup(lambda: (setattr(L.shutil, "which", orig_which),
+                                 L.os.environ.update(orig_env)))
+        with self.assertRaises(RuntimeError):
+            L.detect_backend(cfg)
+        # build_backend("local") must not raise even with nothing up (graceful default)
+        b = L.build_backend("local", cfg)
+        self.assertTrue(b.base_url.startswith("http"))
 
 
 if __name__ == "__main__":
