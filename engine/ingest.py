@@ -14,29 +14,45 @@ from engine.merge — so this module is a thin re-orchestration, not a reimpleme
 """
 from __future__ import annotations
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from engine import merge as M
 
 
 def place_all(cfg, backend, atoms, log=print):
-    """Route atoms in small chunks against the index; return the merged decisions list."""
+    """Route atoms in small chunks against the index; return the merged decisions list.
+
+    Chunks are independent — each classifies its atoms against the same static index/pending
+    snapshot, and decisions are merged then normalized+gated downstream — so we fan them out
+    concurrently to match the local server's parallel slots (LM Studio `PARALLEL n`). Wall-clock
+    drops ~Nx without changing the result; a slow/overflowing chunk no longer blocks the rest.
+    Set `merge.placeConcurrency` to 1 to force the old one-at-a-time behavior (single-slot server).
+    """
     chunk_n = max(1, int(cfg.merge_cfg.get("routeBatch", 10)))
+    workers = max(1, int(cfg.merge_cfg.get("placeConcurrency", 4)))
     index_p = cfg.knowledge_dir / "index.md"
     index_text = index_p.read_text(encoding="utf-8") if index_p.exists() else "(empty KB)"
     pool = M.load_pool(cfg)
     pending = [{"topic": t, "type": v.get("type", "project"), "count": len(v.get("atoms", []))}
                for t, v in pool.items()]
-    decisions = []
-    total = (len(atoms) + chunk_n - 1) // chunk_n
-    for ci in range(total):
-        chunk = atoms[ci * chunk_n:(ci + 1) * chunk_n]
+    chunks = [atoms[i:i + chunk_n] for i in range(0, len(atoms), chunk_n)]
+    total = len(chunks)
+
+    def _place(chunk):
         task = {"atoms": chunk, "index": index_text, "pendingTopics": pending}
-        got = M.route_completion(cfg, backend, task)
-        if not got:
-            log(f"  place {ci + 1}/{total}: unparseable — {len(chunk)} atoms left unrouted")
-            continue
-        decisions.extend(got)
-        log(f"  place {ci + 1}/{total}: +{len(got)} placed ({len(decisions)} total)")
+        return len(chunk), M.route_completion(cfg, backend, task)
+
+    decisions, done = [], 0
+    # max_workers==1 degenerates to sequential; as_completed then yields in submission order.
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for fut in as_completed(ex.submit(_place, c) for c in chunks):
+            n, got = fut.result()
+            done += 1
+            if not got:
+                log(f"  place {done}/{total}: unparseable — {n} atoms left unrouted")
+                continue
+            decisions.extend(got)
+            log(f"  place {done}/{total}: +{len(got)} placed ({len(decisions)} total)")
     return decisions
 
 

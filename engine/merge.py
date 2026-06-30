@@ -580,20 +580,45 @@ def route_completion(cfg, backend, task):
 
 
 def synth_completion(cfg, backend, plan, log=print):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from adapters.model.base import Task
+    from core.config import SENTINEL
     staged = merge_dir(cfg) / "staged"
     staged.mkdir(parents=True, exist_ok=True)
+    lookup = atoms_by_id(cfg)  # read once; shared read-only across worker threads
+    cap = int(cfg.merge_cfg.get("synthNoteCharCap", 48000))  # bound synth input → never overflow ctx
+    workers = max(1, int(cfg.merge_cfg.get("synthConcurrency", 4)))
 
     def _atoms_payload(decisions, extra=()):
-        lookup = atoms_by_id(cfg)
         items = [lookup.get(d["id"], d) for d in decisions] + list(extra)
         return UNTRUSTED_FENCE.format(payload=json.dumps(
             [{k: a.get(k) for k in ("claim", "type", "entities", "evidence",
                                     "source", "date")} for a in items],
             ensure_ascii=False, indent=1))
 
-    def _run(rubric, prompt, slug):
-        from core.config import SENTINEL
+    # Build every prompt up front; the slow model calls then run CONCURRENTLY to match the local
+    # server's parallel slots (LM Studio `PARALLEL n`). One note per worker, each writing its own
+    # staged files (atomic), so threads never collide. synthConcurrency=1 ⇒ old sequential behavior.
+    jobs = []  # (rubric, prompt, slug)
+    for slug, ds in plan["into"].items():
+        note = (cfg.knowledge_dir / f"{slug}.md")
+        if not note.exists():
+            continue
+        note_text = note.read_text(encoding="utf-8")
+        if len(note_text) > cap:  # pathological large note: keep head+tail so the merge still fits
+            note_text = (note_text[:cap * 3 // 4]
+                         + "\n\n…[note body truncated to fit context]…\n\n"
+                         + note_text[-cap // 4:])
+            log(f"  synth {slug}: note capped to {len(note_text)} chars for context fit")
+        jobs.append(("merge-note.md",
+                     f"EXISTING NOTE ({slug}.md):\n{note_text}\n\nNEW ATOMS:\n{_atoms_payload(ds)}", slug))
+    for slug, info in plan["new"].items():
+        jobs.append(("new-note.md",
+                     f"SUBJECT: {info['topic']} (type: {info['type']})\n\n"
+                     f"ATOMS:\n{_atoms_payload(info['decisions'], info['pending_atoms'])}", slug))
+
+    def _run(job):
+        rubric, prompt, slug = job
         try:
             r = backend.run(Task(phase="merge", system=_rubric(cfg, rubric),
                                  prompt=f"{SENTINEL}\n{prompt}", max_tokens=8000))
@@ -605,23 +630,16 @@ def synth_completion(cfg, backend, plan, log=print):
         _write_json(staged / f"{slug}.meta.json", {"conflicts": conflicts.strip() or "none"})
         log(f"  synth {slug}: {len(body)} chars")
 
-    cap = int(cfg.merge_cfg.get("synthNoteCharCap", 48000))  # bound synth input → never overflow ctx
-    for slug, ds in plan["into"].items():
-        note = (cfg.knowledge_dir / f"{slug}.md")
-        if not note.exists():
-            continue
-        note_text = note.read_text(encoding="utf-8")
-        if len(note_text) > cap:  # pathological large note: keep head+tail so the merge still fits
-            note_text = (note_text[:cap * 3 // 4]
-                         + "\n\n…[note body truncated to fit context]…\n\n"
-                         + note_text[-cap // 4:])
-            log(f"  synth {slug}: note capped to {len(note_text)} chars for context fit")
-        _run("merge-note.md",
-             f"EXISTING NOTE ({slug}.md):\n{note_text}\n\nNEW ATOMS:\n{_atoms_payload(ds)}", slug)
-    for slug, info in plan["new"].items():
-        _run("new-note.md",
-             f"SUBJECT: {info['topic']} (type: {info['type']})\n\n"
-             f"ATOMS:\n{_atoms_payload(info['decisions'], info['pending_atoms'])}", slug)
+    if not jobs:
+        return
+    log(f"  synth: {len(jobs)} notes on {workers} worker(s)")
+    if workers == 1:
+        for j in jobs:
+            _run(j)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for fut in as_completed(ex.submit(_run, j) for j in jobs):
+                fut.result()
 
 
 def run_all(cfg, backend_override=None, dry_run=False, promote=False, log=print):
