@@ -55,6 +55,47 @@ class Config:
         return self.state_dir / "manifest.json"
 
 
+# ── spaces: separate knowledge bases (e.g. personal vs work) sharing one pipeline ────────────────
+# config.json: {"spaces": {"work": {"match": ["*vana*"], "knowledge": "knowledge-work",
+#                                   "inject": {"files": [...]}},
+#               "default": {"match": ["*"]}}}
+# Atoms are stamped with their space at extract time (by transcript path); ingest groups by stamp
+# and each space gets its own knowledge dir, pending pool, note ledgers, index and inject targets.
+# With no spaces configured there is a single "default" space and behavior is unchanged.
+def spaces(cfg) -> list:
+    names = list((cfg.data.get("spaces") or {}).keys())
+    if "default" not in names:
+        names.append("default")
+    return names
+
+
+def space_of(cfg, path) -> str:
+    """First configured space whose any glob matches the transcript path; 'default' otherwise."""
+    import fnmatch
+    p = str(path)
+    for name, sc in (cfg.data.get("spaces") or {}).items():
+        if name == "default":
+            continue
+        for pat in (sc.get("match") or []):
+            if fnmatch.fnmatch(p, pat):
+                return name
+    return "default"
+
+
+def for_space(cfg, name: str) -> "Config":
+    """A shallow view of cfg scoped to one space: swapped knowledge dir / inject targets, plus a
+    .space attr that space-aware path helpers (merge_dir, notes_state_dir) key off."""
+    import copy
+    view = copy.copy(cfg)
+    view.space = name
+    if name != "default":
+        sc = (cfg.data.get("spaces") or {}).get(name, {})
+        view.knowledge_dir = _resolve(sc.get("knowledge", f"knowledge-{name}"),
+                                      cfg.knowledge_dir.parent)
+        view.inject_cfg = sc.get("inject", {**cfg.inject_cfg, "files": []})
+    return view
+
+
 def load(path: Path | None = None) -> Config:
     root = repo_root()
     cfg_path = Path(path) if path else (root / "config.json")

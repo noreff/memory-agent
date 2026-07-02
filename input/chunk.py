@@ -14,20 +14,43 @@ import re
 from pathlib import Path
 
 _SYS_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>\s*", re.DOTALL)
+# Our own inject payload carries explicit markers (engine/inject.py) — strip by marker FIRST;
+# exact and format-proof, unlike the content fingerprints below (kept as belt-and-suspenders).
+_INJECT_RE = re.compile(r"<memory-agent-inject>.*?</memory-agent-inject>\s*", re.DOTALL)
 _CMD_WRAPPER_RE = re.compile(
     r"<(command-name|command-message|command-args|local-command-stdout|local-command-caveat)>"
     r".*?</\1>\s*", re.DOTALL)
 _MEM_HEADER = "# Your memory of this user (auto-built knowledge base)"
+# Fingerprints of our OWN memory KB surfacing inside a transcript — either injected as a block, or
+# (the common case) read back as a tool RESULT when a session opens the KB files. Extracting these
+# re-mines the memory system's own output into new atoms: the memory → session → memory feedback
+# loop. Kept broad enough to catch the index header, the SEE-FIRST banner, and the note frontmatter.
+_MEM_FINGERPRINTS = (
+    _MEM_HEADER,
+    "👉 SEE FIRST",
+    "full personal memory KB",
+    "# Knowledge base — index",
+    "auto-built knowledge base",
+    "Your memory of this user",
+    "each has `sources` + `conflicts`",
+)
+
+
+def _is_memory_echo(text: str) -> bool:
+    return any(fp in text for fp in _MEM_FINGERPRINTS)
 
 
 def _strip_injected(text: str) -> str:
     from core.config import SENTINEL
     if SENTINEL in text:  # the system's own internal model call — never re-memorize it
         return ""
+    text = _INJECT_RE.sub("", text)
     text = _SYS_REMINDER_RE.sub("", text)
     text = _CMD_WRAPPER_RE.sub("", text)
-    if _MEM_HEADER in text:  # inject payload outside a system-reminder wrapper (belt & suspenders)
-        text = text.split(_MEM_HEADER)[0]
+    # our own KB injected as prose (outside a system-reminder) — cut it and everything after it
+    for fp in _MEM_FINGERPRINTS:
+        if fp in text:
+            text = text.split(fp)[0]
     return text
 
 
@@ -51,7 +74,7 @@ def _content_text(content, tool_cap: int) -> str:
             else:
                 txt = c if isinstance(c, str) else ""
             capped = "\n".join(txt.splitlines()[:tool_cap]).strip()
-            if capped:
+            if capped and not _is_memory_echo(txt):  # drop reads of our own memory KB (echo loop)
                 parts.append(f"[tool result] {capped}")
         # tool_use payloads are dropped
     return "\n".join(p for p in parts if p)

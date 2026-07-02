@@ -31,7 +31,9 @@ FM_ORDER = ["type", "sources", "confidence", "links", "updated", "conflicts"]
 
 # ── paths / small helpers ────────────────────────────────────────────────────
 def merge_dir(cfg):
-    return cfg.state_dir / "derived" / "merge"
+    space = getattr(cfg, "space", None)  # set by core.config.for_space — pool/staging per space
+    name = "merge" if space in (None, "default") else f"merge-{space}"
+    return cfg.state_dir / "derived" / name
 
 
 def atoms_dir(cfg):
@@ -476,21 +478,9 @@ def promote(cfg, plan=None, log=print):
         written.append(note.stem)
     n_index = rebuild_index(cfg.knowledge_dir)
 
-    # render the lean memory payload to any configured inject files (e.g. pi's global AGENTS.md) so
-    # every promote keeps external agents current; fully guarded — must never break a promote.
-    try:
-        import os as _os
-        from pathlib import Path as _Path
-        from engine.inject import build_payload as _bp
-        _payload = _bp(cfg)
-        for _f in (cfg.inject_cfg.get("files") or []):
-            _p = _Path(_os.path.expanduser(_f))
-            _p.parent.mkdir(parents=True, exist_ok=True)
-            _tmp = _p.with_suffix(_p.suffix + ".tmp")
-            _tmp.write_text(_payload, encoding="utf-8")
-            _tmp.replace(_p)
-    except Exception:
-        pass
+    # keep external agents current (e.g. pi's global AGENTS.md); guarded inside the helper.
+    from engine.inject import write_inject_files
+    write_inject_files(cfg)
 
     # consume atoms — only now do they leave the unrouted pool
     marked = 0

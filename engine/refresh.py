@@ -87,14 +87,21 @@ def load_pending(cfg):
     return list(best.values())
 
 
-def extract_atoms(backend, text, source, date, max_tokens=6000, log=None):
+def extract_atoms(backend, text, source, date, max_tokens=6000, log=None, concurrency=1):
     """Chunk + extract with a one-retry anti-repeat guard (MoE models can loop on long repetitive
-    chunks). Provenance (source/date) is stamped in CODE, never trusted from the model."""
+    chunks). Provenance (source/date) is stamped in CODE, never trusted from the model.
+
+    Chunks are independent, so with concurrency>1 they extract CONCURRENTLY (bounded to the local
+    server's parallel slots). Extract is the dominant cost of a cycle — a huge session is dozens of
+    chunks — so parallelizing it here is the single biggest speedup. Atoms come back in chunk order
+    (stable content-hash ids, readable diffs) regardless of completion order."""
     from adapters.model.base import Task
     from core.config import SENTINEL  # mark extraction calls so they can never be re-memorized
-    atoms = []
     chunks = chunk_text(text)
-    for ci, chunk in enumerate(chunks):
+    n = len(chunks)
+
+    def _extract_chunk(item):
+        ci, chunk = item
         best, t0 = None, time.time()
         for attempt in range(2):
             r = backend.run(Task(phase="extract", system=EXTRACT_SYS,
@@ -108,14 +115,27 @@ def extract_atoms(backend, text, source, date, max_tokens=6000, log=None):
             if parsed is not None and r.finish != "length":
                 break
             if log:
-                log(f"    chunk {ci + 1}/{len(chunks)}: retry (finish={r.finish}, "
+                log(f"    chunk {ci + 1}/{n}: retry (finish={r.finish}, "
                     f"parsed={parsed is not None})")
+        out = []
         for a in best or []:
             a["source"], a["date"] = source, date
-            atoms.append(a)
+            out.append(a)
         if log:
-            log(f"    chunk {ci + 1}/{len(chunks)}: {len(best or [])} atoms "
-                f"({time.time() - t0:.0f}s)")
+            log(f"    chunk {ci + 1}/{n}: {len(best or [])} atoms ({time.time() - t0:.0f}s)")
+        return out
+
+    items = list(enumerate(chunks))
+    workers = max(1, int(concurrency))
+    if workers == 1 or n <= 1:
+        parts = [_extract_chunk(it) for it in items]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            parts = list(ex.map(_extract_chunk, items))  # ex.map preserves input (chunk) order
+    atoms = []
+    for p in parts:
+        atoms.extend(p)
     return atoms
 
 
@@ -142,11 +162,6 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
     min_growth: skip (and KEEP IN INBOX) sessions whose transcript grew by fewer bytes than this
     since their last processed record — saves re-extracting a live session for trivial growth."""
     pending = load_pending(cfg)
-    if limit:
-        pending = pending[:limit]
-    if not pending:
-        log("inbox empty — nothing to refresh")
-        return {"sessions": 0, "atoms": 0}
     pending = [r for r in pending if r.get("source") and r.get("abs")]  # tolerate junk lines
     last = _last_done(cfg)
     if min_growth:
@@ -161,9 +176,13 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
             else:
                 kept.append(rec)
         pending = kept
-        if not pending:
-            log("all pending sessions below growth threshold — nothing to refresh")
-            return {"sessions": 0, "atoms": 0}
+    # limit AFTER filtering, so an interleaved caller's batch always grabs PROCESSABLE sessions
+    # (never a batch that is entirely deferred, which would look like "inbox drained" prematurely)
+    if limit:
+        pending = pending[:limit]
+    if not pending:
+        log("inbox empty — nothing to refresh (all processed or deferred)")
+        return {"sessions": 0, "atoms": 0}
     atoms_dir = cfg.state_dir / "derived" / "atoms"
     n_atoms = 0
     ok = []  # records fully processed this run (failures stay queued for the next run)
@@ -186,8 +205,15 @@ def refresh(cfg, backend_extract, limit=None, dry_run=False, min_growth=0, log=p
                     f"{'no new content in tail' if offset else 'empty after distill'} — skip")
                 ok.append({**rec, "bytesProcessed": end_off})
                 continue
-            atoms = [] if dry_run else extract_atoms(backend_extract, text, rec["source"], date,
-                                                     log=log)
+            atoms = [] if dry_run else extract_atoms(
+                backend_extract, text, rec["source"], date, log=log,
+                concurrency=int(cfg.merge_cfg.get("extractConcurrency", 4)),
+                max_tokens=int(cfg.merge_cfg.get("extractMaxTokens", 8000)))
+            if atoms:  # stamp the space (personal/work/...) by transcript path — ingest groups on it
+                from core.config import space_of
+                sp = space_of(cfg, rec["abs"])
+                for a in atoms:
+                    a["space"] = sp
             new_n = len(atoms)
             if not dry_run:
                 from engine.merge import atom_id
