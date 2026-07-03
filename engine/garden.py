@@ -106,11 +106,12 @@ def _merge_into(cfg, synth_backend, victim, target, log=print):
     return True
 
 
-def garden(cfg, place_backend, synth_backend, apply=False, log=print):
+def garden(cfg, place_backend, synth_backend, apply=False, log=print, max_merges=None):
     """One gardening pass over one space's KB. Dry-run by default."""
     from engine.inject import write_inject_files
     max_bytes = int(cfg.merge_cfg.get("gardenStubBytes", 600))
-    max_merges = int(cfg.merge_cfg.get("gardenMaxMerges", 8))
+    if max_merges is None:
+        max_merges = int(cfg.merge_cfg.get("gardenMaxMerges", 8))
     stubs = find_stubs(cfg, max_bytes)
     fams = find_families(cfg)
     log(f"garden: {len(stubs)} stub(s) <{max_bytes}B, {len(fams)} slug famil(ies)")

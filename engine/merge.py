@@ -217,12 +217,25 @@ def build_note(fields, body):
     return "\n".join(out) + "\n\n" + body.strip() + "\n"
 
 
+_REASONING_LEAD = re.compile(
+    r"^(here'?s a thinking|let'?s think|let me |i('| a)?m going to|i (will|need to|want to)|"
+    r"okay[,.]|we need to|the user (wants|asked|is asking)|first, i)", re.I)
+
+
 def sanitize_body(text):
     """Defense in depth: strip fences and any model-written frontmatter block(s) from a body —
-    but never a legitimate horizontal rule (only blocks whose lines look like `key: value`)."""
+    but never a legitimate horizontal rule (only blocks whose lines look like `key: value`).
+    Also drops LEADING reasoning-leak paragraphs ("Here's a thinking process:", "Let me...") that
+    hybrid-thinking models occasionally emit before the actual note."""
     t = text.strip()
     t = re.sub(r"^```[a-zA-Z]*\n", "", t)
     t = re.sub(r"\n```$", "", t).strip()
+    while t:
+        first, _, rest = t.partition("\n\n")
+        if _REASONING_LEAD.match(first.strip()):
+            t = rest.strip()
+        else:
+            break
     while t.startswith("---"):
         m = re.match(r"^---\n(.*?)\n---\n?", t, re.DOTALL)
         if not m:

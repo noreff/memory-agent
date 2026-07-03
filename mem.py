@@ -271,6 +271,20 @@ def cmd_cycle(cfg, args):
             sweep(cfg, synth)
     except Busy as e:
         print(f"cycle: sweep skipped — {e}")
+    # gardening tick — the taxonomy's immune system, mounted in the pipeline: once the backlog is
+    # drained, merge a bounded batch of stub notes into their parents (gardenMaxMerges per tick,
+    # backups + link-healing inside). Consolidation only ever ADDS notes; this is what un-adds.
+    if cfg.merge_cfg.get("gardenAuto", True) and count_unrouted(cfg) < min_atoms:
+        from core.config import for_space, spaces
+        from engine.garden import garden
+        try:
+            with pipeline_lock(cfg, "merge"):
+                for space in spaces(cfg):
+                    scfg = for_space(cfg, space)
+                    if scfg.knowledge_dir.exists():
+                        garden(scfg, place, synth, apply=True)
+        except Busy as e:
+            print(f"cycle: garden skipped — {e}")
 
 
 def cmd_sources(cfg, args):
@@ -335,7 +349,7 @@ def cmd_garden(cfg, args):
             for space in spaces(cfg):
                 scfg = for_space(cfg, space)
                 if scfg.knowledge_dir.exists():
-                    garden(scfg, place, synth, apply=args.apply)
+                    garden(scfg, place, synth, apply=args.apply, max_merges=args.max)
     except Busy as e:
         print(f"garden: skipped — {e}")
 
@@ -463,6 +477,8 @@ def main():
     g = sub.add_parser("garden")
     g.add_argument("--apply", action="store_true",
                    help="execute the merges (default: dry-run report)")
+    g.add_argument("--max", type=int, default=None,
+                   help="cap merges this run (default: merge.gardenMaxMerges)")
     a = sub.add_parser("adopt")
     a.add_argument("--force", action="store_true")
     e = sub.add_parser("eval")

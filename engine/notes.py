@@ -56,7 +56,10 @@ def _today():
 
 
 def _claim_hash(atom):
-    return hashlib.sha1(str(atom.get("claim", "")).strip().lower().encode()).hexdigest()[:10]
+    # normalize to alnum before hashing: "root is /x/." and "root is /x/" are the SAME fact —
+    # punctuation/spacing variants must not stack up as ledger near-duplicates
+    norm = re.sub(r"[^a-z0-9]+", " ", str(atom.get("claim", "")).lower()).strip()
+    return hashlib.sha1(norm.encode()).hexdigest()[:10]
 
 
 # ── ledger ───────────────────────────────────────────────────────────────────
