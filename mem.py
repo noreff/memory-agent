@@ -29,9 +29,18 @@
        add <path>       register a folder (export / dump / docs) as a first-class incremental source
             --format F --id ID --backfill (label only) --ingest (enqueue now vs the safe baseline)
        remove <id>      unregister a place (state history is left intact)
+
+  viewer (read-only, engine/view.py; all take --plain, color auto-off when piped):
+  python3 mem.py view [NOTE]        dashboard (no arg) or one rendered note (fuzzy slug ok)
+  python3 mem.py list [--type T] [--sort updated|sources|conflicts|atoms] [--limit N]
+  python3 mem.py find QUERY...      full-text search with highlighted matches
+  python3 mem.py why NOTE           receipts: every atom's claim + verbatim evidence + session
+  python3 mem.py conflicts [NOTE]   the supersede log — what memory used to believe
+  python3 mem.py log [--limit N]    what memory learned, newest first
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -375,6 +384,42 @@ def cmd_eval(cfg, args):
     print(json.dumps(results))
 
 
+def cmd_view(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.show(cfg, args.slug) if args.slug else view.dashboard(cfg)
+
+
+def cmd_list(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.list_notes(cfg, type_filter=args.type, sort=args.sort, limit=args.limit)
+
+
+def cmd_find(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.find(cfg, args.query)
+
+
+def cmd_why(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.why(cfg, args.slug, limit=args.limit)
+
+
+def cmd_conflicts(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.conflicts(cfg, args.slug, limit=args.limit)
+
+
+def cmd_log(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.log(cfg, limit=args.limit)
+
+
 def main():
     p = argparse.ArgumentParser(prog="mem")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -423,12 +468,35 @@ def main():
     e = sub.add_parser("eval")
     e.add_argument("mode", nargs="?", choices=["inject", "lookup", "recall", "all"], default="all")
     e.add_argument("--backend", default=None)
+    v = sub.add_parser("view")
+    v.add_argument("slug", nargs="?", default=None, help="note slug (fuzzy); omit for the dashboard")
+    ls = sub.add_parser("list")
+    ls.add_argument("--type", default=None)
+    ls.add_argument("--sort", choices=["updated", "sources", "conflicts", "atoms"], default="updated")
+    ls.add_argument("--limit", type=int, default=30)
+    fd = sub.add_parser("find")
+    fd.add_argument("query", nargs="+")
+    wh = sub.add_parser("why")
+    wh.add_argument("slug")
+    wh.add_argument("--limit", type=int, default=10, help="atoms to show (0 = all)")
+    cf = sub.add_parser("conflicts")
+    cf.add_argument("slug", nargs="?", default=None)
+    cf.add_argument("--limit", type=int, default=12, help="entries to show (0 = all)")
+    lg = sub.add_parser("log")
+    lg.add_argument("--limit", type=int, default=25, help="rows to show (0 = all)")
+    for viewer in (v, ls, fd, wh, cf, lg):
+        viewer.add_argument("--plain", action="store_true", help="no color/decoration")
     args = p.parse_args()
     cfg = cfgmod.load()
-    rc = {"status": cmd_status, "probe-local": cmd_probe_local, "capture": cmd_capture,
-          "inject": cmd_inject, "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest,
-          "cycle": cmd_cycle, "sources": cmd_sources, "adopt": cmd_adopt,
-          "garden": cmd_garden, "eval": cmd_eval}[args.cmd](cfg, args)
+    try:
+        rc = {"status": cmd_status, "probe-local": cmd_probe_local, "capture": cmd_capture,
+              "inject": cmd_inject, "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest,
+              "cycle": cmd_cycle, "sources": cmd_sources, "adopt": cmd_adopt,
+              "garden": cmd_garden, "eval": cmd_eval, "view": cmd_view, "list": cmd_list,
+              "find": cmd_find, "why": cmd_why, "conflicts": cmd_conflicts, "log": cmd_log}[args.cmd](cfg, args)
+    except BrokenPipeError:  # viewer output piped to `head` etc. — exit quietly
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)
     if isinstance(rc, int):
         sys.exit(rc)
 

@@ -11,4 +11,9 @@ ROD_BROWSER_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   vhs docs/demo/hero.tape             # → docs/img/hero.gif
 ```
 
-Tapes: `hero.tape` (memory = files with receipts). Output lands in `docs/img/`.
+Tapes: `hero.tape` (memory = files with receipts; staged `./memory` script), `view.tape` (the real
+`mem.py` viewer: dashboard → find → note → why → conflicts). Output lands in `docs/img/`.
+
+`view.tape` records against the **live personal KB** (`MEMORY_AGENT_DATA` in its hidden setup) —
+real data looks best, but review the gif for anything private before publishing. Delete that
+export line to record the repo's own `knowledge/` instead.

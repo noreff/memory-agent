@@ -244,8 +244,12 @@ def _append_conflicts(fields, new_text):
     cur_text = (cur[1] if cur and cur[0] == "block" else (cur[1] if cur else "")) or ""
     cur_text = str(cur_text).strip()
     stamped = f"[{_today()}] {new_text}"
-    return fset(fields, "conflicts", "block",
-                f"{cur_text}\n\n{stamped}" if cur_text and cur_text != "[]" else stamped)
+    merged = f"{cur_text}\n\n{stamped}" if cur_text and cur_text != "[]" else stamped
+    # cap the log: a hot note is re-rendered many times and this block grows unboundedly
+    # (observed: a 314KB note whose body was 352 chars). Keep the newest entries only.
+    if len(merged) > 4000:
+        merged = "[…older conflict entries trimmed…]\n\n" + merged[-4000:]
+    return fset(fields, "conflicts", "block", merged)
 
 
 # ── index ────────────────────────────────────────────────────────────────────

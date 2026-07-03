@@ -177,11 +177,23 @@ def render_note(cfg, backend, slug, log=print):
     if not ledger and not note.exists():
         return False
     seed = seed_path(cfg, slug).read_text(encoding="utf-8") if seed_path(cfg, slug).exists() else ""
-    payload = UNTRUSTED_FENCE.format(payload=json.dumps(
-        [{k: a.get(k) for k in ("claim", "type", "entities", "evidence", "source", "date")}
-         for a in sorted(ledger, key=lambda a: str(a.get("date") or ""))],
-        ensure_ascii=False, indent=1))
     cap = int(cfg.merge_cfg.get("synthNoteCharCap", 48000))
+    # bound the ATOM payload too (a 270-atom ledger overflows the context and 400s the render):
+    # keep the NEWEST atoms within budget — older ones are already reflected in the seed prose.
+    atoms = sorted(ledger, key=lambda a: str(a.get("date") or ""))
+    slim = [{k: a.get(k) for k in ("claim", "type", "entities", "evidence", "source", "date")}
+            for a in atoms]
+    used, kept = 0, []
+    for a in reversed(slim):
+        j = len(json.dumps(a, ensure_ascii=False))
+        if used + j > cap and kept:
+            break
+        used += j
+        kept.append(a)
+    if len(kept) < len(slim):
+        log(f"  render {slug}: ledger payload capped to newest {len(kept)}/{len(slim)} atoms")
+    kept.reverse()
+    payload = UNTRUSTED_FENCE.format(payload=json.dumps(kept, ensure_ascii=False, indent=1))
     if len(seed) > cap:  # pathological: keep head+tail so the render still fits the context
         seed = seed[:cap * 3 // 4] + "\n\n…[seed truncated]…\n\n" + seed[-cap // 4:]
     if seed:
@@ -192,8 +204,11 @@ def render_note(cfg, backend, slug, log=print):
         rubric, prompt = "new-note.md", (f"SUBJECT: {topic} (type: {_majority_type(ledger)})\n\n"
                                          f"ATOMS:\n{payload}")
     try:
+        # generous output budget: a reasoning model thinks 5-6k tokens BEFORE the body — with only
+        # 8k total a big render starves and emits a stub (observed: 352 chars from 443 atoms)
         r = backend.run(Task(phase="merge", system=_rubric(cfg, rubric),
-                             prompt=f"{SENTINEL}\n{prompt}", max_tokens=8000))
+                             prompt=f"{SENTINEL}\n{prompt}",
+                             max_tokens=int(cfg.merge_cfg.get("renderMaxTokens", 14000))))
     except Exception as e:  # one note must never crash the cycle
         log(f"  render {slug}: SKIPPED — {type(e).__name__}: {str(e)[:80]} (atoms stay in ledger)")
         return False
