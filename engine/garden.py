@@ -55,24 +55,36 @@ def find_families(cfg):
 
 
 def _pick_target(cfg, backend, slug, body):
-    """Reuse the proven route path: present the stub as one atom against the index; an 'into'
-    verdict with a valid, different target = merge there; anything else = keep."""
+    """Gardening needs the OPPOSITE bias from routing: route.md is precision-tuned ('when in
+    doubt, new'), which keeps every stub forever. A dedicated merge-biased rubric picks the one
+    related note to absorb the stub. The stub's own index row is removed first — with it present
+    the model dutifully routes the stub into itself."""
+    from adapters.model.base import Task
+    from core.config import SENTINEL
     index_p = cfg.knowledge_dir / "index.md"
-    task = {"atoms": [{"id": f"stub:{slug}", "claim": f"(note {slug}.md) {body[:800]}",
-                       "type": "reference", "entities": slug.split("-")}],
-            "index": index_p.read_text(encoding="utf-8") if index_p.exists() else "(empty KB)",
-            "pendingTopics": []}
-    decisions = M.route_completion(cfg, backend, task) or []
-    for d in decisions:
-        if d.get("verdict") == "into" and d.get("target"):
-            target = M.slugify(d["target"])
-            if target in M.valid_slugs(cfg) and target != slug:
-                return target
+    index = index_p.read_text(encoding="utf-8") if index_p.exists() else ""
+    index = "\n".join(ln for ln in index.splitlines() if f"[[{slug}]]" not in ln)
+    prompt = (f"{SENTINEL}\nSTUB ({slug}.md):\n{body[:800]}\n\nINDEX:\n{index}")
+    for _ in range(2):
+        try:
+            r = backend.run(Task(phase="route", system=M._rubric(cfg, "garden-target.md"),
+                                 prompt=prompt, max_tokens=4000, expect_json=True))
+        except Exception:
+            continue
+        obj = M._parse_json_lenient(r.text)
+        target = M.slugify(str((obj or {}).get("target") or ""))
+        if target and target not in ("none", slug) and target in M.valid_slugs(cfg):
+            return target
+        if obj is not None:
+            return None  # a parsed, deliberate 'none'
     return None
 
 
-def _merge_into(cfg, synth_backend, victim, target, log=print):
-    """Move the victim's truth (ledger + prose-as-entry) into the target, re-render, delete."""
+def _absorb(cfg, victim, target, log=print):
+    """Move the victim's truth (ledger + prose-as-entry) into the target's ledger and delete the
+    victim (with backup + link healing). No render here — the caller compacts each touched target
+    ONCE at the end (many stubs often share a parent), and even if that render is deferred the
+    absorbed content is already durable in the target's ledger and visible in its Recent section."""
     vnote = cfg.knowledge_dir / f"{victim}.md"
     fields, body = M.parse_note(vnote.read_text(encoding="utf-8"))
     ty = M.fget(fields, "type")
@@ -87,9 +99,6 @@ def _merge_into(cfg, synth_backend, victim, target, log=print):
                         "source": sources[0] if sources else None,
                         "merged_from": victim})
     N.append_atoms(cfg, target, entries, log=log)
-    if not N.render_note(cfg, synth_backend, target, log=log):
-        return False  # target unchanged on disk beyond appends — victim stays; retry next run
-
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = cfg.state_dir / "backups" / ts
     backup.mkdir(parents=True, exist_ok=True)
@@ -102,7 +111,7 @@ def _merge_into(cfg, synth_backend, victim, target, log=print):
         txt = note.read_text(encoding="utf-8", errors="ignore")
         if f"[[{victim}]]" in txt:
             note.write_text(txt.replace(f"[[{victim}]]", f"[[{target}]]"), encoding="utf-8")
-    log(f"  merged [[{victim}]] -> [[{target}]] (backup {backup})")
+    log(f"  merged [[{victim}]] -> [[{target}]]")
     return True
 
 
@@ -128,9 +137,11 @@ def garden(cfg, place_backend, synth_backend, apply=False, log=print, max_merges
         if not apply:
             log(f"  stub {slug} ({sz}B): would merge -> [[{target}]]  (dry-run; pass --apply)")
             continue
-        if _merge_into(cfg, synth_backend, slug, target, log=log):
+        if _absorb(cfg, slug, target, log=log):
             merged.append((slug, target))
     if merged:
+        # one render per touched parent, however many stubs it absorbed
+        N.compact(cfg, synth_backend, slugs=sorted({t for _, t in merged}), force=True, log=log)
         M.rebuild_index(cfg.knowledge_dir)
         write_inject_files(cfg)
     return {"stubs": len(stubs), "families": fams, "merged": merged}
