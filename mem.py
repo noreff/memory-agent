@@ -30,6 +30,10 @@
             --format F --id ID --backfill (label only) --ingest (enqueue now vs the safe baseline)
        remove <id>      unregister a place (state history is left intact)
 
+  python3 mem.py ui [--out F] [--no-open]  build the self-contained KB browser (one HTML file,
+                        data embedded: notes, atom ledgers with evidence, sources, graph, gardener
+                        verdicts) and open it in the browser
+
   viewer (read-only, engine/view.py; all take --plain, color auto-off when piped):
   python3 mem.py view [NOTE]        dashboard (no arg) or one rendered note (fuzzy slug ok)
   python3 mem.py list [--type T] [--sort updated|sources|conflicts|atoms] [--limit N]
@@ -355,6 +359,16 @@ def cmd_garden(cfg, args):
         print(f"garden: skipped — {e}")
 
 
+def cmd_ui(cfg, args):
+    """Snapshot the whole KB into one self-contained HTML browser and open it."""
+    from engine.ui import build
+    out = build(cfg, Path(args.out).expanduser() if args.out else None)
+    print(f"ui: {out}")
+    if not args.no_open:
+        import webbrowser
+        webbrowser.open(f"file://{out}")
+
+
 def cmd_adopt(cfg, args):
     """Backfill last mile: promote state/derived/notes/*.md into knowledge/ and build the index."""
     from engine.merge import rebuild_index
@@ -482,6 +496,9 @@ def main():
                    help="cap merges this run (default: merge.gardenMaxMerges)")
     g.add_argument("--families", type=int, default=None,
                    help="cap families judged this run (default: merge.gardenFamiliesPerRun)")
+    u = sub.add_parser("ui")
+    u.add_argument("--out", default=None, help="output path (default: state/ui.html)")
+    u.add_argument("--no-open", action="store_true")
     a = sub.add_parser("adopt")
     a.add_argument("--force", action="store_true")
     e = sub.add_parser("eval")
@@ -511,7 +528,7 @@ def main():
         rc = {"status": cmd_status, "probe-local": cmd_probe_local, "capture": cmd_capture,
               "inject": cmd_inject, "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest,
               "cycle": cmd_cycle, "sources": cmd_sources, "adopt": cmd_adopt,
-              "garden": cmd_garden, "eval": cmd_eval, "view": cmd_view, "list": cmd_list,
+              "garden": cmd_garden, "ui": cmd_ui, "eval": cmd_eval, "view": cmd_view, "list": cmd_list,
               "find": cmd_find, "why": cmd_why, "conflicts": cmd_conflicts, "log": cmd_log}[args.cmd](cfg, args)
     except BrokenPipeError:  # viewer output piped to `head` etc. — exit quietly
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
