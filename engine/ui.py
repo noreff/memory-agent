@@ -81,9 +81,11 @@ def collect(cfg):
                     edges.append(e)
 
     from engine.garden import _judged
+    from engine.inject import build_payload
     unrouted = M.count_unrouted(cfg)
     inbox = sum(1 for _ in cfg.inbox.open()) if cfg.inbox.exists() else 0
     return {
+        "inject": build_payload(cfg),
         "notes": notes, "ledgers": ledgers, "edges": edges,
         "sourcePaths": _source_paths(cfg),
         "garden": _judged(cfg),
@@ -270,9 +272,15 @@ function md(t){
   h = h.replace(/`([^`]+)`/g,"<code>$1</code>");
   h = h.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
   h = h.replace(/\[\[([a-z0-9-]+)\]\]/g,(m,s)=> s in bySlug ? `<span class="wl" data-s="${s}">${s}</span>` : m);
-  const lines = h.split("\n"); const out=[]; let ul=false;
+  const lines = h.split("\n"); const out=[]; let ul=false, tb=null;
+  const flushT=()=>{if(tb){out.push('<table class="gard">'+tb.map((r,i)=>
+    "<tr>"+r.map(c=>i? "<td>"+c+"</td>" : "<th>"+c+"</th>").join("")+"</tr>").join("")+"</table>");tb=null;}};
   for(const ln of lines){
     const l=ln.trimEnd();
+    if(/^\|/.test(l)){if(ul){out.push("</ul>");ul=false}
+      if(/^\|[\s:-]+\|/.test(l.replace(/-/g,"-"))&&/^[|\s:-]+$/.test(l)) continue;  // |---| separator
+      (tb=tb||[]).push(l.replace(/^\||\|$/g,"").split("|").map(c=>c.trim())); continue;}
+    flushT();
     if(/^### /.test(l)){if(ul){out.push("</ul>");ul=false} out.push("<h3>"+l.slice(4)+"</h3>")}
     else if(/^## /.test(l)){if(ul){out.push("</ul>");ul=false} out.push("<h2>"+l.slice(3)+"</h2>")}
     else if(/^# /.test(l)){if(ul){out.push("</ul>");ul=false} out.push("<h1>"+l.slice(2)+"</h1>")}
@@ -281,25 +289,45 @@ function md(t){
     else out.push("<p>"+l+"</p>");
   }
   if(ul)out.push("</ul>");
+  flushT();
   let html=out.join("\n");
   if(query) try{html=html.replace(new RegExp("("+query.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","gi"),"<mark>$1</mark>")}catch(e){}
   return html;
 }
 
-// home = the consolidated document: the WHOLE memory as one scrollable page
-function renderHome(){
-  current = null;
-  const parts = [`<div class="homehead"><h1 class="note">Consolidated memory</h1>
-    <div class="sub">${N.length} notes · ${D.stats.atoms.toLocaleString("en")} facts — every note in full,
-    A→Z. Click a title (or the sidebar) for its facts and provenance; click the logo to come back.</div></div>`];
-  for(const n of N){
-    parts.push(`<section class="hnote">
-      <h1 data-s="${n.slug}">${esc(n.slug)}</h1>
-      <div class="meta"><span class="ty">${n.type}</span><span>${n.atoms} facts</span>
+// home = WHAT THE AGENTS ACTUALLY SEE: the exact inject payload that goes into every session
+// start (Claude Code hook + pi's AGENTS.md), rendered readably, with a raw-text toggle.
+// The full A-Z dump of every note stays available behind a button.
+function renderHome(mode){
+  current = null; mode = mode || "prompt";
+  const kb = new Blob([D.inject]).size;
+  const head = `<div class="homehead"><h1 class="note">What your agents see</h1>
+    <div class="sub">This exact payload (${(kb/1024).toFixed(1)} KB) is injected at every session
+    start — Claude Code via the SessionStart hook, pi via AGENTS.md. It is the identity core plus
+    the freshest notes and a pointer to the full index; agents Read/grep deeper on demand.</div>
+    <div class="vtabs" style="margin-top:12px">
+      <button data-m="prompt" class="${mode==='prompt'?'on':''}">Prompt payload</button>
+      <button data-m="raw" class="${mode==='raw'?'on':''}">Raw text</button>
+      <button data-m="all" class="${mode==='all'?'on':''}">Everything A→Z · ${N.length} notes</button>
+    </div></div>`;
+  let bodyHtml = "";
+  const inner = D.inject.replace(/^<memory-agent-inject>\n?/,"").replace(/\n?<\/memory-agent-inject>\s*$/,"");
+  if(mode==="prompt") bodyHtml = `<div class="prose">${md(inner)}</div>`;
+  else if(mode==="raw") bodyHtml =
+    `<pre style="font-family:var(--mono);font-size:11.5px;line-height:1.6;white-space:pre-wrap;
+      background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px">${esc(D.inject)}</pre>`;
+  else {
+    const parts=[];
+    for(const n of N){
+      parts.push(`<section class="hnote"><h1 data-s="${n.slug}">${esc(n.slug)}</h1>
+        <div class="meta"><span class="ty">${n.type}</span><span>${n.atoms} facts</span>
         <span>updated ${n.updated||"?"}</span></div>
-      <div class="prose">${md(n.body)}</div></section>`);
+        <div class="prose">${md(n.body)}</div></section>`);
+    }
+    bodyHtml = parts.join("");
   }
-  $("#note").innerHTML = parts.join("");
+  $("#note").innerHTML = head + bodyHtml;
+  document.querySelectorAll(".homehead .vtabs button").forEach(b=>b.onclick=()=>{renderHome(b.dataset.m);$("#main").scrollTop=0;});
   document.querySelectorAll(".hnote h1").forEach(h=>h.onclick=()=>openNote(h.dataset.s,"prose"));
   document.querySelectorAll("#note .wl").forEach(w=>w.onclick=()=>openNote(w.dataset.s,"prose"));
   renderList();
