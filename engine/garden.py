@@ -9,11 +9,15 @@ data-pipe-project). The gardener:
   2. merges: the stub's ledger atoms move to the target's ledger, its prose becomes one synthetic
      ledger entry (nothing is lost), the target re-renders, the stub is deleted (with backup) and
      every [[stub]] link across the KB is rewritten to [[target]];
-  3. reports near-duplicate slug FAMILIES for a human decision — auto-merging families is where
-     gardeners cause damage, so v1 only surfaces them.
+  3. JUDGES near-duplicate slug FAMILIES, a bounded number per run: a dedicated rubric decides
+     "one fragmented topic" vs "legitimately different topics that share a prefix" — merging only
+     on a confident 'same' (canonical member absorbs the rest), and remembering 'different'
+     verdicts in state/derived/garden*.json so a kept family is never re-asked until its
+     membership changes.
 
-Conservative by design: merges capped per run (merge.gardenMaxMerges, default 8), dry-run unless
-apply=True, every deletion backed up under state/backups/.
+Conservative by design: merges capped per run (merge.gardenMaxMerges, default 8), families judged
+per run capped (merge.gardenFamiliesPerRun, default 1), dry-run unless apply=True, every deletion
+backed up under state/backups/.
 """
 from __future__ import annotations
 import datetime
@@ -44,7 +48,7 @@ def find_stubs(cfg, max_bytes):
 
 
 def find_families(cfg):
-    """Slug families sharing a 2-segment prefix (vana-storage-*): reported, never auto-merged."""
+    """Slug families sharing a 2-segment prefix (vana-storage-*)."""
     slugs = sorted(M.valid_slugs(cfg))
     fams = {}
     for s in slugs:
@@ -52,6 +56,68 @@ def find_families(cfg):
         if len(parts) >= 2:
             fams.setdefault("-".join(parts[:2]), []).append(s)
     return {k: v for k, v in fams.items() if len(v) > 1}
+
+
+# ── family judge: 'one fragmented topic' vs 'different topics sharing a prefix' ─────────────────
+def _state_path(cfg):
+    space = getattr(cfg, "space", None)
+    name = "garden.json" if space in (None, "default") else f"garden-{space}.json"
+    return cfg.state_dir / "derived" / name
+
+
+def _judged(cfg):
+    return M._read_json(_state_path(cfg), {})
+
+
+def _record_verdict(cfg, fam, members, verdict):
+    st = _judged(cfg)
+    st[fam] = {"members": sorted(members), "verdict": verdict,
+               "at": datetime.date.today().isoformat()}
+    M._write_json(_state_path(cfg), st)
+
+
+def unjudged_families(cfg):
+    """Families with no recorded verdict — or whose membership CHANGED since the last verdict
+    (a new member reopens the question)."""
+    st = _judged(cfg)
+    out = {}
+    for fam, members in find_families(cfg).items():
+        rec = st.get(fam)
+        if not rec or sorted(members) != rec.get("members"):
+            out[fam] = members
+    return out
+
+
+def _judge_family(cfg, backend, members):
+    """Ask the family rubric: same (-> canonical slug) or different (-> None). Doubt = different."""
+    from adapters.model.base import Task
+    from core.config import SENTINEL
+    parts = []
+    for s in members:
+        p = cfg.knowledge_dir / f"{s}.md"
+        fields, body = M.parse_note(p.read_text(encoding="utf-8", errors="ignore"))
+        ty = M.fget(fields, "type")
+        parts.append(f"### {s}.md (type: {ty[1] if ty else '?'})\n"
+                     f"{N._strip_recent(body).strip()[:1200]}")
+    prompt = f"{SENTINEL}\nFAMILY:\n\n" + "\n\n".join(parts)
+    for _ in range(2):
+        try:
+            r = backend.run(Task(phase="route", system=M._rubric(cfg, "garden-family.md"),
+                                 prompt=prompt, max_tokens=4000, expect_json=True))
+        except Exception:
+            continue
+        obj = M._parse_json_lenient(r.text)
+        if not obj:
+            continue
+        if obj.get("verdict") == "same":
+            raw = str(obj.get("canonical") or "").strip().strip("[]").strip()
+            if raw.endswith(".md"):  # models often echo the filename — slugify would keep '-md'
+                raw = raw[:-3]
+            canon = M.slugify(raw)
+            if canon in members:
+                return canon
+        return None  # parsed 'different' (or bad canonical — treat as doubt)
+    return None
 
 
 def _pick_target(cfg, backend, slug, body):
@@ -115,17 +181,19 @@ def _absorb(cfg, victim, target, log=print):
     return True
 
 
-def garden(cfg, place_backend, synth_backend, apply=False, log=print, max_merges=None):
+def garden(cfg, place_backend, synth_backend, apply=False, log=print, max_merges=None,
+           max_families=None):
     """One gardening pass over one space's KB. Dry-run by default."""
     from engine.inject import write_inject_files
     max_bytes = int(cfg.merge_cfg.get("gardenStubBytes", 600))
     if max_merges is None:
         max_merges = int(cfg.merge_cfg.get("gardenMaxMerges", 8))
+    if max_families is None:
+        max_families = int(cfg.merge_cfg.get("gardenFamiliesPerRun", 1))
     stubs = find_stubs(cfg, max_bytes)
-    fams = find_families(cfg)
-    log(f"garden: {len(stubs)} stub(s) <{max_bytes}B, {len(fams)} slug famil(ies)")
-    for fam, members in sorted(fams.items()):
-        log(f"  family {fam}: {', '.join(members)}  (review manually)")
+    pending_fams = unjudged_families(cfg)
+    log(f"garden: {len(stubs)} stub(s) <{max_bytes}B, {len(pending_fams)} unjudged famil(ies)")
+
     merged = []
     for slug, sz in stubs[:max_merges]:
         note = cfg.knowledge_dir / f"{slug}.md"
@@ -139,9 +207,29 @@ def garden(cfg, place_backend, synth_backend, apply=False, log=print, max_merges
             continue
         if _absorb(cfg, slug, target, log=log):
             merged.append((slug, target))
+
+    # family judging: bounded per run, apply-only (it spends model calls), doubt keeps the family
+    fam_merged = []
+    if apply:
+        for fam, members in sorted(pending_fams.items())[:max_families]:
+            canon = _judge_family(cfg, place_backend, members)
+            if not canon:
+                _record_verdict(cfg, fam, members, "keep")
+                log(f"  family {fam}: judged DIFFERENT — kept ({', '.join(members)})")
+                continue
+            for victim in [m for m in members if m != canon]:
+                if _absorb(cfg, victim, canon, log=log):
+                    fam_merged.append((victim, canon))
+            _record_verdict(cfg, fam, [canon], "merged")
+            log(f"  family {fam}: judged SAME — absorbed into [[{canon}]]")
+    else:
+        for fam, members in sorted(pending_fams.items()):
+            log(f"  family {fam}: {', '.join(members)}  (unjudged; --apply lets the judge decide)")
+
+    merged += fam_merged
     if merged:
-        # one render per touched parent, however many stubs it absorbed
+        # one render per touched parent, however many notes it absorbed
         N.compact(cfg, synth_backend, slugs=sorted({t for _, t in merged}), force=True, log=log)
         M.rebuild_index(cfg.knowledge_dir)
         write_inject_files(cfg)
-    return {"stubs": len(stubs), "families": fams, "merged": merged}
+    return {"stubs": len(stubs), "families": pending_fams, "merged": merged}

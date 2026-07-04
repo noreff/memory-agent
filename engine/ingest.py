@@ -18,6 +18,28 @@ from engine import merge as M
 from engine import notes as N
 
 
+def family_guard(decisions, valid):
+    """Stop slug families at BIRTH: a 'new' topic whose slug is a hyphen-boundary extension or
+    contraction of exactly one existing note becomes 'into' that note (data-pipe-api must not be
+    born next to data-pipe). Ambiguity (two related notes match, e.g. topic 'local-ai' against
+    local-ai-stack AND local-ai-youtube-channel) means we cannot know the right home — leave the
+    decision alone rather than guess. Pure code, precision-first, same philosophy as the
+    deterministic router."""
+    out, redirected = [], 0
+    for d in decisions:
+        if d.get("verdict") == "new" and d.get("topic"):
+            t = M.slugify(d["topic"])
+            cands = {s for s in valid
+                     if t != s and (t.startswith(s + "-") or s.startswith(t + "-"))}
+            if t in valid:
+                cands = {t}
+            if len(cands) == 1:
+                d = {**d, "verdict": "into", "target": next(iter(cands)), "topic": None}
+                redirected += 1
+        out.append(d)
+    return out, redirected
+
+
 # ── deterministic routing: entities -> slug, in code ────────────────────────
 def _norm(s):
     return re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-")
@@ -164,6 +186,9 @@ def ingest(cfg, place_backend, synth_backend, limit=None, promote=True, log=prin
         decisions, demoted = M.normalize_decisions(decisions, M.valid_slugs(scfg))
         if demoted:
             log(f"  normalize: {demoted} invalid 'into' targets -> 'new'")
+        decisions, redirected = family_guard(decisions, M.valid_slugs(scfg))
+        if redirected:
+            log(f"  family-guard: {redirected} near-duplicate 'new' topics -> 'into' existing kin")
         plan = M.gate(decisions, pool, M.threshold(scfg))
         log(f"gate[{space}]: into={len(plan['into'])} new={list(plan['new'])} "
             f"dup={len(plan['duplicate'])} discard={len(plan['discard'])} "

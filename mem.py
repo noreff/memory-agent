@@ -349,7 +349,8 @@ def cmd_garden(cfg, args):
             for space in spaces(cfg):
                 scfg = for_space(cfg, space)
                 if scfg.knowledge_dir.exists():
-                    garden(scfg, place, synth, apply=args.apply, max_merges=args.max)
+                    garden(scfg, place, synth, apply=args.apply, max_merges=args.max,
+                           max_families=args.families)
     except Busy as e:
         print(f"garden: skipped — {e}")
 
@@ -479,6 +480,8 @@ def main():
                    help="execute the merges (default: dry-run report)")
     g.add_argument("--max", type=int, default=None,
                    help="cap merges this run (default: merge.gardenMaxMerges)")
+    g.add_argument("--families", type=int, default=None,
+                   help="cap families judged this run (default: merge.gardenFamiliesPerRun)")
     a = sub.add_parser("adopt")
     a.add_argument("--force", action="store_true")
     e = sub.add_parser("eval")
