@@ -122,8 +122,14 @@ a{color:var(--acc2);text-decoration:none} a:hover{text-decoration:underline}
 #app{display:grid;grid-template-columns:340px 1fr;grid-template-rows:52px 1fr;height:100vh}
 header{grid-column:1/3;display:flex;align-items:center;gap:18px;padding:0 18px;
  border-bottom:1px solid var(--line);background:var(--panel)}
-header .logo{font-weight:700;letter-spacing:.06em}
+header .logo{font-weight:700;letter-spacing:.06em;cursor:pointer;user-select:none}
 header .logo i{color:var(--acc);font-style:normal}
+.homehead{margin-bottom:22px}
+.homehead .sub{color:var(--ink2);font-size:13px;margin-top:4px}
+section.hnote{border-top:1px solid var(--line);padding-top:18px;margin-top:26px}
+section.hnote h1{font-size:18px;cursor:pointer}
+section.hnote h1:hover{color:var(--acc)}
+section.hnote .meta{margin-bottom:10px}
 header .stats{display:flex;gap:14px;color:var(--ink2);font-size:12.5px;font-family:var(--mono)}
 header .stats b{color:var(--ink);font-weight:600}
 header .tabs{margin-left:auto;display:flex;gap:4px}
@@ -201,7 +207,7 @@ mark{background:color-mix(in srgb,var(--acc) 30%,transparent);color:inherit;bord
   <div id="list"></div>
 </div>
 <div id="main">
-  <div class="gv on" id="v-notes"><div class="pad" id="note"><div class="empty">pick a note on the left — or search</div></div></div>
+  <div class="gv on" id="v-notes"><div class="pad" id="note"></div></div>
   <div class="gv" id="v-graph"><canvas id="graph"></canvas></div>
   <div class="gv" id="v-garden"><div class="pad" id="garden"></div></div>
 </div>
@@ -279,6 +285,29 @@ function md(t){
   if(query) try{html=html.replace(new RegExp("("+query.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","gi"),"<mark>$1</mark>")}catch(e){}
   return html;
 }
+
+// home = the consolidated document: the WHOLE memory as one scrollable page
+function renderHome(){
+  current = null;
+  const parts = [`<div class="homehead"><h1 class="note">Consolidated memory</h1>
+    <div class="sub">${N.length} notes · ${D.stats.atoms.toLocaleString("en")} facts — every note in full,
+    A→Z. Click a title (or the sidebar) for its facts and provenance; click the logo to come back.</div></div>`];
+  for(const n of N){
+    parts.push(`<section class="hnote">
+      <h1 data-s="${n.slug}">${esc(n.slug)}</h1>
+      <div class="meta"><span class="ty">${n.type}</span><span>${n.atoms} facts</span>
+        <span>updated ${n.updated||"?"}</span></div>
+      <div class="prose">${md(n.body)}</div></section>`);
+  }
+  $("#note").innerHTML = parts.join("");
+  document.querySelectorAll(".hnote h1").forEach(h=>h.onclick=()=>openNote(h.dataset.s,"prose"));
+  document.querySelectorAll("#note .wl").forEach(w=>w.onclick=()=>openNote(w.dataset.s,"prose"));
+  renderList();
+  history.replaceState(null,""," ");
+}
+document.querySelector("header .logo").onclick=()=>{
+  document.querySelector('[data-tab="notes"]').click();
+  renderHome(); $("#main").scrollTop=0;};
 
 let vtab = "prose";
 function openNote(slug, vt){
@@ -400,8 +429,9 @@ function initGraph(){
 }
 
 renderList();
-// deep-link: #slug, #slug/tab, or #!graph / #!garden
+// deep-link: #slug, #slug/tab, or #!graph / #!garden; no hash -> the consolidated home page
 {const h=decodeURIComponent(location.hash.slice(1));
  if(h.startsWith("!")) document.querySelector(`[data-tab="${h.slice(1)}"]`)?.click();
- else if(h){const [s,vt]=h.split("/"); if(s in bySlug) openNote(s, vt||"prose");}}
+ else if(h && h.split("/")[0] in bySlug){const [s,vt]=h.split("/"); openNote(s, vt||"prose");}
+ else renderHome();}
 </script></body></html>"""
