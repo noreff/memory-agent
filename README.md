@@ -85,6 +85,18 @@ python3 mem.py inject      print what a new session would receive
 python3 mem.py eval        score your memory against your own gold set
 ```
 
+And a read-only viewer over the KB (color auto-disables when piped; `--plain` to force off):
+
+```
+python3 mem.py view          dashboard: note types, coverage, freshness, pipeline depth
+python3 mem.py view NOTE     one rendered note (fuzzy slug is fine: `view caching` works)
+python3 mem.py find QUERY    full-text search with highlighted matches
+python3 mem.py why NOTE      receipts: every atom's claim + verbatim evidence quote + source session
+python3 mem.py conflicts     the supersede log across the KB — what memory used to believe
+python3 mem.py log           what memory learned, newest first
+python3 mem.py list          all notes as a table (--type, --sort updated|sources|conflicts|atoms)
+```
+
 `refresh` and `merge` are batched, locked against concurrent runs, and safe to fire from cron. The `/memory-refresh` command wraps the whole cycle and replies in one line.
 
 ## Config

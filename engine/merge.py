@@ -31,7 +31,9 @@ FM_ORDER = ["type", "sources", "confidence", "links", "updated", "conflicts"]
 
 # ── paths / small helpers ────────────────────────────────────────────────────
 def merge_dir(cfg):
-    return cfg.state_dir / "derived" / "merge"
+    space = getattr(cfg, "space", None)  # set by core.config.for_space — pool/staging per space
+    name = "merge" if space in (None, "default") else f"merge-{space}"
+    return cfg.state_dir / "derived" / name
 
 
 def atoms_dir(cfg):
@@ -215,12 +217,25 @@ def build_note(fields, body):
     return "\n".join(out) + "\n\n" + body.strip() + "\n"
 
 
+_REASONING_LEAD = re.compile(
+    r"^(here'?s a thinking|let'?s think|let me |i('| a)?m going to|i (will|need to|want to)|"
+    r"okay[,.]|we need to|the user (wants|asked|is asking)|first, i)", re.I)
+
+
 def sanitize_body(text):
     """Defense in depth: strip fences and any model-written frontmatter block(s) from a body —
-    but never a legitimate horizontal rule (only blocks whose lines look like `key: value`)."""
+    but never a legitimate horizontal rule (only blocks whose lines look like `key: value`).
+    Also drops LEADING reasoning-leak paragraphs ("Here's a thinking process:", "Let me...") that
+    hybrid-thinking models occasionally emit before the actual note."""
     t = text.strip()
     t = re.sub(r"^```[a-zA-Z]*\n", "", t)
     t = re.sub(r"\n```$", "", t).strip()
+    while t:
+        first, _, rest = t.partition("\n\n")
+        if _REASONING_LEAD.match(first.strip()):
+            t = rest.strip()
+        else:
+            break
     while t.startswith("---"):
         m = re.match(r"^---\n(.*?)\n---\n?", t, re.DOTALL)
         if not m:
@@ -242,8 +257,12 @@ def _append_conflicts(fields, new_text):
     cur_text = (cur[1] if cur and cur[0] == "block" else (cur[1] if cur else "")) or ""
     cur_text = str(cur_text).strip()
     stamped = f"[{_today()}] {new_text}"
-    return fset(fields, "conflicts", "block",
-                f"{cur_text}\n\n{stamped}" if cur_text and cur_text != "[]" else stamped)
+    merged = f"{cur_text}\n\n{stamped}" if cur_text and cur_text != "[]" else stamped
+    # cap the log: a hot note is re-rendered many times and this block grows unboundedly
+    # (observed: a 314KB note whose body was 352 chars). Keep the newest entries only.
+    if len(merged) > 4000:
+        merged = "[…older conflict entries trimmed…]\n\n" + merged[-4000:]
+    return fset(fields, "conflicts", "block", merged)
 
 
 # ── index ────────────────────────────────────────────────────────────────────
@@ -476,21 +495,9 @@ def promote(cfg, plan=None, log=print):
         written.append(note.stem)
     n_index = rebuild_index(cfg.knowledge_dir)
 
-    # render the lean memory payload to any configured inject files (e.g. pi's global AGENTS.md) so
-    # every promote keeps external agents current; fully guarded — must never break a promote.
-    try:
-        import os as _os
-        from pathlib import Path as _Path
-        from engine.inject import build_payload as _bp
-        _payload = _bp(cfg)
-        for _f in (cfg.inject_cfg.get("files") or []):
-            _p = _Path(_os.path.expanduser(_f))
-            _p.parent.mkdir(parents=True, exist_ok=True)
-            _tmp = _p.with_suffix(_p.suffix + ".tmp")
-            _tmp.write_text(_payload, encoding="utf-8")
-            _tmp.replace(_p)
-    except Exception:
-        pass
+    # keep external agents current (e.g. pi's global AGENTS.md); guarded inside the helper.
+    from engine.inject import write_inject_files
+    write_inject_files(cfg)
 
     # consume atoms — only now do they leave the unrouted pool
     marked = 0

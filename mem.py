@@ -29,9 +29,18 @@
        add <path>       register a folder (export / dump / docs) as a first-class incremental source
             --format F --id ID --backfill (label only) --ingest (enqueue now vs the safe baseline)
        remove <id>      unregister a place (state history is left intact)
+
+  viewer (read-only, engine/view.py; all take --plain, color auto-off when piped):
+  python3 mem.py view [NOTE]        dashboard (no arg) or one rendered note (fuzzy slug ok)
+  python3 mem.py list [--type T] [--sort updated|sources|conflicts|atoms] [--limit N]
+  python3 mem.py find QUERY...      full-text search with highlighted matches
+  python3 mem.py why NOTE           receipts: every atom's claim + verbatim evidence + session
+  python3 mem.py conflicts [NOTE]   the supersede log — what memory used to believe
+  python3 mem.py log [--limit N]    what memory learned, newest first
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -193,57 +202,89 @@ def cmd_cycle(cfg, args):
         enqueued += r["enqueued"]
     print(f"capture: scanned={scanned} enqueued={enqueued}")
 
-    # 2. extract — LOCAL ONLY. A daemon must not fall through the auto-chain to the subscription;
-    #    no local server => leave the work queued for the next tick.
+    # 2+3. INTERLEAVED extract <-> consolidate — LOCAL ONLY. Extracting the WHOLE inbox before any
+    #      note is written means, on a big backlog of huge sessions, HOURS with zero visible progress
+    #      (and parallel synth never even starts). Instead we work in ROUNDS: extract a small batch of
+    #      sessions, then immediately consolidate what we have. Notes grow every round, synth starts
+    #      after the first batch, and a kill loses at most one durable step. A daemon must not fall
+    #      through to the subscription; no local server => leave everything queued for the next tick.
     if not local_reachable(cfg):
         print("cycle: local model server unreachable — captured only, atoms queued for next tick")
         return
-    extract = backend_for_phase(cfg, "extract", "local")
-    print(f"extract backend: {extract.name} ({getattr(extract, 'model', '?')})")
-    try:
-        with pipeline_lock(cfg, "refresh"):
-            r = refresh(cfg, extract, min_growth=min_growth)
-        print(f"refresh: sessions={r['sessions']} atoms={r['atoms']}")
-    except Busy as e:
-        print(f"cycle: refresh skipped — {e}")
-        return
-
-    # 3. merge + promote — gated: only spin the model for a full route/synth when the backlog is
-    #    worth it; otherwise memory is already fresh. Batched (merge.routeBatch) — a large backlog
-    #    drains across successive ticks rather than hogging the model for one long run.
-    n = count_unrouted(cfg)
-    if n < min_atoms:
-        print(f"merge: {n} unrouted < {min_atoms} — fresh, nothing to consolidate")
-        return
-    # Drain the whole backlog via ingest (subject-centric, local-safe) in durable steps that each
-    # promote — so an external kill at any point loses at most one step, and the next tick resumes
-    # from the durable atom state (flock auto-releases on death; launchd restarts the tick).
     from engine.ingest import ingest
+    extract = backend_for_phase(cfg, "extract", "local")
     place = backend_for_phase(cfg, "route", "local")
     synth = backend_for_phase(cfg, "merge", "local")
+    refresh_batch = int(cfg.merge_cfg.get("refreshBatch", 8))  # sessions extracted per round
     step = int(cfg.merge_cfg.get("ingestBatch", 100))
-    print(f"merge: {n} unrouted >= {min_atoms} — draining on local "
-          f"(place={place.name}:{getattr(place, 'model', '?')}, "
-          f"synth={synth.name}:{getattr(synth, 'model', '?')}, step={step})")
+    print(f"extract backend: {extract.name} ({getattr(extract, 'model', '?')}) | "
+          f"interleave {refresh_batch} sessions/round then consolidate")
+
+    def _drain():
+        # Consolidate the current unrouted backlog via ingest (subject-centric, local-safe) in durable
+        # steps that each promote — a kill at any point loses at most one step; the next tick resumes
+        # from the durable atom state (flock auto-releases on death; launchd restarts the tick).
+        n = count_unrouted(cfg)
+        if n < min_atoms:
+            print(f"  merge: {n} unrouted < {min_atoms} — nothing to consolidate yet")
+            return
+        print(f"  merge: {n} unrouted — draining (place={place.name}:{getattr(place, 'model', '?')}, "
+              f"synth={synth.name}:{getattr(synth, 'model', '?')}, step={step})")
+        try:
+            with pipeline_lock(cfg, "merge"):
+                prev, stuck = None, 0
+                while True:
+                    n = count_unrouted(cfg)
+                    if n < min_atoms:
+                        print(f"  cycle: drained — {n} unrouted left")
+                        break
+                    if prev is not None and n >= prev:
+                        stuck += 1
+                        if stuck >= 2:
+                            print(f"  cycle: no progress at {n} — stopping (next tick retries)")
+                            break
+                    else:
+                        stuck = 0
+                    prev = n
+                    ingest(cfg, place, synth, limit=step, promote=True)
+        except Busy as e:
+            print(f"  cycle: merge skipped — {e}")
+
+    round_no = 0
+    while True:
+        try:
+            with pipeline_lock(cfg, "refresh"):
+                r = refresh(cfg, extract, limit=refresh_batch, min_growth=min_growth)
+        except Busy as e:
+            print(f"cycle: refresh skipped — {e}")
+            return
+        round_no += 1
+        print(f"refresh round {round_no}: sessions={r['sessions']} atoms={r['atoms']}")
+        _drain()                        # progressive consolidation — memory grows every round
+        if r["sessions"] == 0:          # no processable sessions left (rest deferred) — done this tick
+            break
+    # cycle-end polish: force-render every note still carrying unconsolidated atoms, so a finished
+    # tick leaves zero Recent sections behind (between ticks this is a no-op).
+    from engine.ingest import sweep
     try:
         with pipeline_lock(cfg, "merge"):
-            prev, stuck = None, 0
-            while True:
-                n = count_unrouted(cfg)
-                if n < min_atoms:
-                    print(f"cycle: drained — {n} unrouted left")
-                    break
-                if prev is not None and n >= prev:
-                    stuck += 1
-                    if stuck >= 2:
-                        print(f"cycle: no progress at {n} — stopping (next tick retries)")
-                        break
-                else:
-                    stuck = 0
-                prev = n
-                ingest(cfg, place, synth, limit=step, promote=True)
+            sweep(cfg, synth)
     except Busy as e:
-        print(f"cycle: merge skipped — {e}")
+        print(f"cycle: sweep skipped — {e}")
+    # gardening tick — the taxonomy's immune system, mounted in the pipeline: once the backlog is
+    # drained, merge a bounded batch of stub notes into their parents (gardenMaxMerges per tick,
+    # backups + link-healing inside). Consolidation only ever ADDS notes; this is what un-adds.
+    if cfg.merge_cfg.get("gardenAuto", True) and count_unrouted(cfg) < min_atoms:
+        from core.config import for_space, spaces
+        from engine.garden import garden
+        try:
+            with pipeline_lock(cfg, "merge"):
+                for space in spaces(cfg):
+                    scfg = for_space(cfg, space)
+                    if scfg.knowledge_dir.exists():
+                        garden(scfg, place, synth, apply=True)
+        except Busy as e:
+            print(f"cycle: garden skipped — {e}")
 
 
 def cmd_sources(cfg, args):
@@ -291,6 +332,29 @@ def cmd_sources(cfg, args):
         print(f"  {'':10} {s['path']}")
 
 
+def cmd_garden(cfg, args):
+    """De-fragment the KB: merge stub notes into their parents, report near-duplicate slug
+    families. Dry-run unless --apply. Local-only (safe under the daemon's policy)."""
+    from adapters.model.loader import backend_for_phase, local_reachable
+    from core.config import for_space, spaces
+    from engine.garden import garden
+    from engine.lock import Busy, pipeline_lock
+    if not local_reachable(cfg):
+        print("garden: local model server unreachable")
+        return 1
+    place = backend_for_phase(cfg, "route", "local")
+    synth = backend_for_phase(cfg, "merge", "local")
+    try:
+        with pipeline_lock(cfg, "merge"):
+            for space in spaces(cfg):
+                scfg = for_space(cfg, space)
+                if scfg.knowledge_dir.exists():
+                    garden(scfg, place, synth, apply=args.apply, max_merges=args.max,
+                           max_families=args.families)
+    except Busy as e:
+        print(f"garden: skipped — {e}")
+
+
 def cmd_adopt(cfg, args):
     """Backfill last mile: promote state/derived/notes/*.md into knowledge/ and build the index."""
     from engine.merge import rebuild_index
@@ -335,6 +399,42 @@ def cmd_eval(cfg, args):
     print(json.dumps(results))
 
 
+def cmd_view(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.show(cfg, args.slug) if args.slug else view.dashboard(cfg)
+
+
+def cmd_list(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.list_notes(cfg, type_filter=args.type, sort=args.sort, limit=args.limit)
+
+
+def cmd_find(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.find(cfg, args.query)
+
+
+def cmd_why(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.why(cfg, args.slug, limit=args.limit)
+
+
+def cmd_conflicts(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.conflicts(cfg, args.slug, limit=args.limit)
+
+
+def cmd_log(cfg, args):
+    from engine import view
+    view.init(plain=args.plain)
+    view.log(cfg, limit=args.limit)
+
+
 def main():
     p = argparse.ArgumentParser(prog="mem")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -375,17 +475,47 @@ def main():
     cy.add_argument("--min-atoms", type=int, default=None,
                     help="skip the local merge below this many unrouted atoms "
                          "(default: merge.cycleMinAtoms or 8)")
+    g = sub.add_parser("garden")
+    g.add_argument("--apply", action="store_true",
+                   help="execute the merges (default: dry-run report)")
+    g.add_argument("--max", type=int, default=None,
+                   help="cap merges this run (default: merge.gardenMaxMerges)")
+    g.add_argument("--families", type=int, default=None,
+                   help="cap families judged this run (default: merge.gardenFamiliesPerRun)")
     a = sub.add_parser("adopt")
     a.add_argument("--force", action="store_true")
     e = sub.add_parser("eval")
     e.add_argument("mode", nargs="?", choices=["inject", "lookup", "recall", "all"], default="all")
     e.add_argument("--backend", default=None)
+    v = sub.add_parser("view")
+    v.add_argument("slug", nargs="?", default=None, help="note slug (fuzzy); omit for the dashboard")
+    ls = sub.add_parser("list")
+    ls.add_argument("--type", default=None)
+    ls.add_argument("--sort", choices=["updated", "sources", "conflicts", "atoms"], default="updated")
+    ls.add_argument("--limit", type=int, default=30)
+    fd = sub.add_parser("find")
+    fd.add_argument("query", nargs="+")
+    wh = sub.add_parser("why")
+    wh.add_argument("slug")
+    wh.add_argument("--limit", type=int, default=10, help="atoms to show (0 = all)")
+    cf = sub.add_parser("conflicts")
+    cf.add_argument("slug", nargs="?", default=None)
+    cf.add_argument("--limit", type=int, default=12, help="entries to show (0 = all)")
+    lg = sub.add_parser("log")
+    lg.add_argument("--limit", type=int, default=25, help="rows to show (0 = all)")
+    for viewer in (v, ls, fd, wh, cf, lg):
+        viewer.add_argument("--plain", action="store_true", help="no color/decoration")
     args = p.parse_args()
     cfg = cfgmod.load()
-    rc = {"status": cmd_status, "probe-local": cmd_probe_local, "capture": cmd_capture,
-          "inject": cmd_inject, "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest,
-          "cycle": cmd_cycle, "sources": cmd_sources, "adopt": cmd_adopt,
-          "eval": cmd_eval}[args.cmd](cfg, args)
+    try:
+        rc = {"status": cmd_status, "probe-local": cmd_probe_local, "capture": cmd_capture,
+              "inject": cmd_inject, "refresh": cmd_refresh, "merge": cmd_merge, "ingest": cmd_ingest,
+              "cycle": cmd_cycle, "sources": cmd_sources, "adopt": cmd_adopt,
+              "garden": cmd_garden, "eval": cmd_eval, "view": cmd_view, "list": cmd_list,
+              "find": cmd_find, "why": cmd_why, "conflicts": cmd_conflicts, "log": cmd_log}[args.cmd](cfg, args)
+    except BrokenPipeError:  # viewer output piped to `head` etc. — exit quietly
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)
     if isinstance(rc, int):
         sys.exit(rc)
 

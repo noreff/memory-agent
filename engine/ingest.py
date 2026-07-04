@@ -1,33 +1,92 @@
-"""engine/ingest — subject-centric consolidation that replaces the monolithic route batch.
+"""engine/ingest — consolidation under the compiled-notes model (see engine/notes.py).
 
-The old `route` asked ONE LLM call for a large structured verdict over a big atom batch. On local
-reasoning models that overflows: they "think" for thousands of tokens and never finish the JSON, so
-the whole batch fails atomically. `ingest` reshapes the work into the form local models handle:
+Placement is DETERMINISTIC-FIRST: an atom whose entities unambiguously name exactly one existing
+note (or pending topic) is routed by CODE — instant, free, testable. Only the ambiguous residue
+goes to the model, in small parallel chunks (`merge.routeBatch` — empirically the only size whose
+thinking+JSON reliably fits a local reasoning model).
 
-  1. PLACE — classify atoms against the index in SMALL safe chunks (`merge.routeBatch`, default 10 —
-     empirically the only size whose thinking+JSON reliably fits), accumulating decisions across
-     chunks. A chunk that fails to parse just leaves its atoms unrouted; the rest proceed.
-  2. SYNTH — write ONE note per subject (the per-note, prose-shaped call local models do well).
-
-One ingest run drains the whole backlog. Frontmatter is built in code and promote is reused, both
-from engine.merge — so this module is a thin re-orchestration, not a reimplementation.
+Applying a placement is an APPEND to the note's atom ledger (durable, code-only, zero tokens) —
+the model is off the write path entirely. Prose is recompiled later by notes.compact() when a
+note accumulates enough pending atoms. So one ingest step costs: N cheap routes + K appends;
+the expensive synth work is amortized across many steps instead of paid on every touch.
 """
 from __future__ import annotations
-import shutil
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from engine import merge as M
+from engine import notes as N
 
 
+def family_guard(decisions, valid):
+    """Stop slug families at BIRTH: a 'new' topic whose slug is a hyphen-boundary extension or
+    contraction of exactly one existing note becomes 'into' that note (data-pipe-api must not be
+    born next to data-pipe). Ambiguity (two related notes match, e.g. topic 'local-ai' against
+    local-ai-stack AND local-ai-youtube-channel) means we cannot know the right home — leave the
+    decision alone rather than guess. Pure code, precision-first, same philosophy as the
+    deterministic router."""
+    out, redirected = [], 0
+    for d in decisions:
+        if d.get("verdict") == "new" and d.get("topic"):
+            t = M.slugify(d["topic"])
+            cands = {s for s in valid
+                     if t != s and (t.startswith(s + "-") or s.startswith(t + "-"))}
+            if t in valid:
+                cands = {t}
+            if len(cands) == 1:
+                d = {**d, "verdict": "into", "target": next(iter(cands)), "topic": None}
+                redirected += 1
+        out.append(d)
+    return out, redirected
+
+
+# ── deterministic routing: entities -> slug, in code ────────────────────────
+def _norm(s):
+    return re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-")
+
+
+def _slug_matches(entity, slugs):
+    """Slugs the normalized entity points at: exact slug, or a full hyphen-boundary substring
+    (entity 'data-connectors' matches slug 'vana-data-connectors'; 'vana' matches too many and
+    is discarded by the uniqueness rule in route_deterministic)."""
+    e = _norm(entity)
+    if not e or len(e) < 4:  # 1-3 char tokens ('pi', 'x') match everything — never trust them
+        return set()
+    hits = set()
+    for s in slugs:
+        if e == s or f"-{e}-" in f"-{s}-":
+            hits.add(s)
+    return hits
+
+
+def route_deterministic(cfg, atoms, pool):
+    """Split atoms into (decisions, residue): a decision is emitted only when the atom's entities
+    collectively point at EXACTLY ONE existing note (-> into) or pending topic (-> new). Anything
+    ambiguous or unmatched is residue for the model. Zero-false-positive by construction: one
+    candidate or nothing."""
+    slugs = M.valid_slugs(cfg)
+    topics = {M.slugify(t): t for t in pool}
+    decisions, residue = [], []
+    for a in atoms:
+        cands, topic_cands = set(), set()
+        for e in (a.get("entities") or []):
+            cands |= _slug_matches(e, slugs)
+            topic_cands |= _slug_matches(e, topics.keys())
+        if len(cands) == 1:
+            decisions.append({"id": a["id"], "verdict": "into", "target": next(iter(cands))})
+        elif not cands and len(topic_cands) == 1:
+            decisions.append({"id": a["id"], "verdict": "new",
+                              "topic": topics[next(iter(topic_cands))], "type": a.get("type")})
+        else:
+            residue.append(a)
+    return decisions, residue
+
+
+# ── model routing for the residue (small parallel chunks) ────────────────────
 def place_all(cfg, backend, atoms, log=print):
     """Route atoms in small chunks against the index; return the merged decisions list.
-
-    Chunks are independent — each classifies its atoms against the same static index/pending
-    snapshot, and decisions are merged then normalized+gated downstream — so we fan them out
-    concurrently to match the local server's parallel slots (LM Studio `PARALLEL n`). Wall-clock
-    drops ~Nx without changing the result; a slow/overflowing chunk no longer blocks the rest.
-    Set `merge.placeConcurrency` to 1 to force the old one-at-a-time behavior (single-slot server).
-    """
+    Chunks are independent — fan out to the local server's parallel slots
+    (`merge.placeConcurrency`; 1 forces the old sequential behavior)."""
     chunk_n = max(1, int(cfg.merge_cfg.get("routeBatch", 10)))
     workers = max(1, int(cfg.merge_cfg.get("placeConcurrency", 4)))
     index_p = cfg.knowledge_dir / "index.md"
@@ -43,7 +102,6 @@ def place_all(cfg, backend, atoms, log=print):
         return len(chunk), M.route_completion(cfg, backend, task)
 
     decisions, done = [], 0
-    # max_workers==1 degenerates to sequential; as_completed then yields in submission order.
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for fut in as_completed(ex.submit(_place, c) for c in chunks):
             n, got = fut.result()
@@ -56,39 +114,105 @@ def place_all(cfg, backend, atoms, log=print):
     return decisions
 
 
+# ── apply: placements become ledger APPENDS (durable, code-only) ─────────────
+def _apply_plan(cfg, plan, log=print):
+    lookup = M.atoms_by_id(cfg)
+
+    def _full(ds, extra=()):
+        return [{"id": d["id"], **lookup.get(d["id"], d)} for d in ds] + list(extra)
+
+    touched = []
+    for slug, ds in plan["into"].items():
+        n = N.append_atoms(cfg, slug, _full(ds), log=log)
+        M.mark_atoms(cfg, [d["id"] for d in ds], slug)
+        touched.append(slug)
+        log(f"  append {slug}: +{n} atoms (pending {N.pending_count(cfg, slug)})")
+    pool = M.load_pool(cfg)
+    for slug, info in plan["new"].items():
+        atoms = _full(info["decisions"], info["pending_atoms"])
+        n = N.append_atoms(cfg, slug, atoms, note_type=info["type"], log=log)
+        M.mark_atoms(cfg, [d["id"] for d in info["decisions"]], slug)
+        M.mark_atoms(cfg, [a["id"] for a in info["pending_atoms"] if a.get("id")], slug)
+        pool.pop(info["topic"], None)
+        touched.append(slug)
+        log(f"  new {slug}: {n} atoms")
+    M.mark_atoms(cfg, plan["duplicate"], "duplicate")
+    M.mark_atoms(cfg, plan["discard"], "discarded")
+    for topic, info in plan["pending_add"].items():
+        ids = [d["id"] for d in info["decisions"]]
+        M.mark_atoms(cfg, ids, f"pending:{topic}")
+        entry = pool.setdefault(topic, {"type": info["type"], "atoms": [],
+                                        "first_seen": N._today()})
+        known = {a.get("id") for a in entry["atoms"]}
+        for aid in ids:
+            if aid not in known and aid in lookup:
+                entry["atoms"].append({"id": aid, **lookup[aid]})
+    M.save_pool(cfg, pool)
+    return touched
+
+
+def _spaces_of(cfg, atoms):
+    groups = {}
+    for a in atoms:
+        groups.setdefault(a.get("space") or "default", []).append(a)
+    return groups
+
+
 def ingest(cfg, place_backend, synth_backend, limit=None, promote=True, log=print):
-    """Drain unrouted atoms: place in small chunks → gate → synth one note per subject → promote."""
+    """Drain unrouted atoms: deterministic route -> model route for residue -> ledger appends ->
+    compact (render) the notes that crossed the threshold -> reindex + inject. Grouped per space."""
+    from core.config import for_space
+    from engine.inject import write_inject_files
     atoms = M.collect_unrouted(cfg)
     if limit:
         atoms = atoms[:limit]
     if not atoms:
         log("ingest: nothing unrouted")
         return {"placed": 0, "into": 0, "new": 0}
-    log(f"ingest: {len(atoms)} unrouted; place on {place_backend.name}, synth on {synth_backend.name}")
 
-    md = M.merge_dir(cfg)
-    for stale in ("staged", "out"):
-        if (md / stale).exists():
-            shutil.rmtree(md / stale)
-    for stale in ("routing.json", "plan.json"):
-        (md / stale).unlink(missing_ok=True)
+    total = {"placed": 0, "into": 0, "new": 0}
+    for space, batch in sorted(_spaces_of(cfg, atoms).items()):
+        scfg = for_space(cfg, space)
+        pool = M.load_pool(scfg)
+        det, residue = route_deterministic(scfg, batch, pool)
+        log(f"ingest[{space}]: {len(batch)} atoms — {len(det)} routed in code, "
+            f"{len(residue)} to the model")
+        decisions = list(det)
+        if residue:
+            decisions += place_all(scfg, place_backend, residue, log=log) or []
+        if not decisions:
+            log(f"ingest[{space}]: no decisions — nothing consumed")
+            continue
+        decisions, demoted = M.normalize_decisions(decisions, M.valid_slugs(scfg))
+        if demoted:
+            log(f"  normalize: {demoted} invalid 'into' targets -> 'new'")
+        decisions, redirected = family_guard(decisions, M.valid_slugs(scfg))
+        if redirected:
+            log(f"  family-guard: {redirected} near-duplicate 'new' topics -> 'into' existing kin")
+        plan = M.gate(decisions, pool, M.threshold(scfg))
+        log(f"gate[{space}]: into={len(plan['into'])} new={list(plan['new'])} "
+            f"dup={len(plan['duplicate'])} discard={len(plan['discard'])} "
+            f"pending+={list(plan['pending_add'])}")
+        touched = _apply_plan(scfg, plan, log=log)
+        if promote:
+            N.compact(scfg, synth_backend, slugs=touched, log=log)
+            M.rebuild_index(scfg.knowledge_dir)
+            write_inject_files(scfg)
+        total["placed"] += len(decisions)
+        total["into"] += len(plan["into"])
+        total["new"] += len(plan["new"])
+    return total
 
-    decisions = place_all(cfg, place_backend, atoms, log=log)
-    if not decisions:
-        log("ingest: no decisions parsed — nothing consumed")
-        return {"placed": 0, "into": 0, "new": 0}
-    M._write_json(md / "routing.json", {"decisions": decisions})
 
-    decisions, demoted = M.normalize_decisions(decisions, M.valid_slugs(cfg))
-    if demoted:
-        log(f"  normalize: {demoted} invalid 'into' targets -> 'new'")
-    plan = M.gate(decisions, M.load_pool(cfg), M.threshold(cfg))
-    log(f"gate: into={len(plan['into'])} new={list(plan['new'])} dup={len(plan['duplicate'])} "
-        f"discard={len(plan['discard'])} pending+={list(plan['pending_add'])}")
-
-    # SYNTH is the heavy, reliable part — one prose note per subject (reused from engine.merge).
-    M.synth_completion(cfg, synth_backend, plan, log=log)
-    # finalize re-derives the plan from routing.json (same result), assembles notes with code-built
-    # frontmatter, and (promote) backs up + writes into knowledge/ + reindexes + consumes atoms.
-    M.finalize(cfg, promote_flag=promote, log=log)
-    return {"placed": len(decisions), "into": len(plan["into"]), "new": len(plan["new"])}
+def sweep(cfg, synth_backend, log=print):
+    """Cycle-end polish: force-render EVERY note with pending atoms (across spaces), so a drained
+    backlog ends with zero unconsolidated sections. Between cycles this is a no-op."""
+    from core.config import for_space, spaces
+    from engine.inject import write_inject_files
+    for space in spaces(cfg):
+        scfg = for_space(cfg, space)
+        done = N.compact(scfg, synth_backend, force=True, log=log)
+        if done:
+            M.rebuild_index(scfg.knowledge_dir)
+            write_inject_files(scfg)
+            log(f"sweep[{space}]: rendered {len(done)} note(s)")
